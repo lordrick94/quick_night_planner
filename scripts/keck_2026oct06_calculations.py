@@ -494,7 +494,8 @@ def passes_keck_target_selection(mag, dec):
 
 
 def analyze_targets(targets_csv, date_str='2026-10-06', mapping=None,
-                     assume_masks=False):
+                     assume_masks=False, time_overrides=None,
+                     sn_overrides=None):
     """
     Analyze all targets for observability on given date at Keck.
 
@@ -514,8 +515,15 @@ def analyze_targets(targets_csv, date_str='2026-10-06', mapping=None,
         milled before the run. It allocates the time; it does not make the
         mask exist, so the designs still have to be submitted.
     """
-    # Read targets (any schema -> canonical)
+    # Read targets (any schema -> canonical); --set-time overrides t_target,
+    # --set-sn target_sn
+    from night_planner.targets_io import apply_sn_overrides, apply_time_overrides
     df = load_targets(targets_csv, mapping=mapping)
+    try:
+        df = apply_time_overrides(df, time_overrides)
+        df = apply_sn_overrides(df, sn_overrides)
+    except ValueError as err:
+        raise SystemExit(f'error: {err}')
 
     # Apply Keck target-selection rule (mag > 19, unless Dec > Lick limit)
     n_before = len(df)
@@ -561,6 +569,7 @@ def analyze_targets(targets_csv, date_str='2026-10-06', mapping=None,
         dm = row['dm']
         mag_band = row.get('mag_band', '') or ''
         t_target = row.get('t_target', np.nan)
+        target_sn = row.get('target_sn', np.nan)
         required = bool(row.get('required', False))
 
         # Calculate airmass at evening twilight
@@ -648,6 +657,7 @@ def analyze_targets(targets_csv, date_str='2026-10-06', mapping=None,
             'DM': dm,
             'mag_band': mag_band,
             't_target': t_target,
+            'target_sn': target_sn,
             'required': required,
             'priority': row.get('priority', 1.0),
             'lris_mode': lris_mode,
@@ -787,10 +797,14 @@ def _target_exposure(row, airmass, etc_opts=None):
     # UCO/Lick ETC by default, or whatever --etc names.
     from night_planner import etc as etc_mod
     from night_planner.instrument_params import DEFAULT_SEEING
+    from night_planner.targets_io import has_own_sn, row_target_sn
+    # The row's own target_sn (column or --set-sn) beats the plan's.
+    sn_goal = row_target_sn(row, etc_opts.get('target_sn')
+                            or etc_mod.TARGET_SN['lris'])
     e = etc_mod.exposure(etc_opts.get('etc') or 'lris', row['mag_r'], band,
                          airmass, etc_opts.get('seeing') or DEFAULT_SEEING['lris'],
                          etc_opts.get('config') or DEFAULT_CONFIG['lris'],
-                         etc_opts.get('target_sn') or etc_mod.TARGET_SN['lris'],
+                         sn_goal,
                          etc_opts.get('n_sub_min') or etc_mod.N_SUB_MIN['lris'])
     sn = e.pop('sn_sub', None) or {}
     comb = e.pop('sn_combined', None) or {}
@@ -801,13 +815,13 @@ def _target_exposure(row, airmass, etc_opts=None):
     if etc_opts is not None and spectrum['wave']:
         etc_opts.setdefault('_spectra', {})[row['TNS']] = {
             **spectrum, 'airmass': airmass, 'sub_len_s': e.get('sub_len_s'),
-            'n_sub': e.get('n_sub'), 'target_sn': etc_opts.get('target_sn'),
+            'n_sub': e.get('n_sub'), 'target_sn': sn_goal,
             'band': band}
     return {**e, 'mode': 'longslit', 'total_min': round(e['science_min'] + 5, 1),
             'achieved_sn_blue': sn.get('blue'), 'achieved_sn_red': sn.get('red'),
             'sn_sub_blue': sn.get('blue'), 'sn_sub_red': sn.get('red'),
             'sn_comb_blue': comb.get('blue'), 'sn_comb_red': comb.get('red'),
-            'band': band}
+            'sn_goal': sn_goal, 'sn_goal_own': has_own_sn(row), 'band': band}
 
 
 def append_forced_targets(selected, results_df, twilight, forced, prev_dec,
@@ -1769,6 +1783,13 @@ def parse_args(argv=None):
     p.add_argument('--block', action='append', default=[],
                    help='Blocked-out window, "HH:MM-HH:MM" or '
                    '"HH:MM-HH:MM@reason". Repeatable.')
+    p.add_argument('--set-time', action='append', default=[],
+                   help='Set a target\'s time on target, "TNS@MINUTES", as if '
+                        'the table\'s t_target said so; it is then scheduled '
+                        'normally. Repeatable.')
+    p.add_argument('--set-sn', action='append', default=[],
+                   help='Set a target\'s S/N per sub-exposure, "TNS@SN", as if '
+                        'the table\'s target_sn said so. Repeatable.')
     p.add_argument('--force', action='append', default=[],
                    help='Force a target in after the normal schedule with a '
                    'truncated exposure: "TNS@MINUTES" (e.g. '
@@ -1842,7 +1863,9 @@ def run(args):
 
     # Analyze all targets
     results_df, twilight, start_hst = analyze_targets(
-        targets_csv, date, assume_masks=args.assume_masks)
+        targets_csv, date, assume_masks=args.assume_masks,
+        time_overrides=getattr(args, 'set_time', None),
+        sn_overrides=getattr(args, 'set_sn', None))
 
     # A manual start overrides the timeline-start used for the standard
     # star / focus block too (not just the science scheduler) -- the

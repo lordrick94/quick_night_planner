@@ -87,6 +87,13 @@ What every plan now includes:
 - **Observing log page.** Calibrations checklist, night checklist,
   conditions log and per-target outcomes, then a Markdown night report plus
   the FFFF-PZ CSV (`night-planner report --plan-dir ...`).
+- **Excel night plan.** Every generated plan gets
+  `<plan dir>_Night_plan.xlsx`, in the observers' format: a
+  duration-driven timeline with LST/UT/local formulas, a calibrations
+  panel, computed twilight, standard-star options, the checklist and the
+  tracking sheet. It is part of the Export zip. For a multi-night run:
+  `night-planner excel --plan-dir NIGHT1 --plan-dir NIGHT2`. See
+  [`docs/excel_night_plan_format.md`](docs/excel_night_plan_format.md).
 
 Calibrations are no longer scheduled. They are ticked off on the Observing
 log page.

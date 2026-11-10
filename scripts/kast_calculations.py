@@ -85,16 +85,25 @@ def make_kast_exposure(etc_opts=None, spectra=None):
     from night_planner import etc as etc_mod
     from night_planner.instrument_params import DEFAULT_SEEING, ETC_FILTERS
     from night_planner.sky import block_airmass
+    from night_planner.targets_io import has_own_sn, row_target_sn
 
     opts = dict(etc_opts or {'etc': 'empirical'})
     spec = opts.get('etc') or 'kast'
     empirical = etc_mod.load_etc(spec) is etc_mod.empirical_kast_etc
     rule = opts.get('airmass_rule', 'worst')
+    plan_sn = opts.get('target_sn') or etc_mod.TARGET_SN['kast']
     best = {}
 
     def exposure(row, start=None, minutes=None):
+        # A target with its own S/N goal (target_sn column, --set-sn) is
+        # sized by the UCO Kast ETC even on an empirical plan: the empirical
+        # rule has no S/N, so it could not honour the request (2026-11-10).
+        own_sn = has_own_sn(row)
+        row_empirical = empirical and not own_sn
+        row_spec = 'kast' if (empirical and own_sn) else spec
+        sn_goal = None if row_empirical else row_target_sn(row, plan_sn)
         airmass, used_rule = 1.0, ''
-        if not empirical:
+        if not row_empirical:
             ra = row['RA_hours'] * 15.0
             if row['TNS'] not in best:
                 best[row['TNS']] = (block_airmass(ra, row['Dec_deg'], row['entry_pst'],
@@ -111,24 +120,25 @@ def make_kast_exposure(etc_opts=None, spectra=None):
             else str(band).strip()
         if band not in ETC_FILTERS:
             band = opts.get('mag_band') or 'r'
-        e = etc_mod.exposure(spec, row['mag_r'], band, airmass,
+        e = etc_mod.exposure(row_spec, row['mag_r'], band, airmass,
                              opts.get('seeing') or DEFAULT_SEEING['kast'],
                              opts.get('config') or DEFAULT_CONFIG['kast'],
-                             opts.get('target_sn') or etc_mod.TARGET_SN['kast'],
+                             sn_goal or plan_sn,
                              opts.get('n_sub_min') or etc_mod.N_SUB_MIN['kast'])
         if spectra is not None and e.get('wave'):
             spectra[row['TNS']] = {'wave': e['wave'], 's2n': e['s2n'],
                                    'airmass': airmass, 'sub_len_s': e['sub_len_s'],
                                    'n_sub': e['n_sub'], 'band': band,
-                                   'target_sn': opts.get('target_sn')}
+                                   'target_sn': sn_goal}
         sn, comb = e.get('sn_sub') or {}, e.get('sn_combined') or {}
         out = {'red': e['red_exp'], 'blue': e['blue_exp'],
                'dur_s': e['science_min'] * 60.0,
-               'airmass_used': None if empirical else airmass,
+               'airmass_used': None if row_empirical else airmass,
                'airmass_rule': used_rule,
                'sn_sub_blue': sn.get('blue'), 'sn_sub_red': sn.get('red'),
                'sn_comb_blue': comb.get('blue'), 'sn_comb_red': comb.get('red'),
-               'time_source': 'empirical' if empirical else 'ETC',
+               'time_source': 'empirical' if row_empirical else 'ETC',
+               'sn_goal': sn_goal, 'sn_goal_own': own_sn,
                'etc_min': e['science_min'],
                'required': bool(row.get('required', False))}
         # A user t_target sets the time (T3.3); the estimate stays as etc_min.
@@ -137,7 +147,7 @@ def make_kast_exposure(etc_opts=None, spectra=None):
             out.update(red=f'{float(user_t):g} min (user)',
                        blue=f'{float(user_t):g} min (user)',
                        dur_s=float(user_t) * 60.0, time_source='user',
-                       airmass_used=None, airmass_rule='')
+                       airmass_used=None, airmass_rule='', sn_goal=None)
         return out
 
     return exposure
@@ -169,7 +179,8 @@ STD_STAR_MINUTES = 10
 MIN_PARTIAL_MINUTES = 10
 
 
-def analyze_targets(targets_csv, date_str, mapping=None):
+def analyze_targets(targets_csv, date_str, mapping=None, time_overrides=None,
+                    sn_overrides=None):
     """
     Per-target HA window for a Lick night.
 
@@ -188,8 +199,19 @@ def analyze_targets(targets_csv, date_str, mapping=None):
     Returns
     -------
     (results_df, twilight)
+
+    time_overrides : list of "NAME@MINUTES", optional (--set-time): sets
+        those targets' t_target as if the table had said so.
+    sn_overrides : list of "NAME@SN", optional (--set-sn): sets those
+        targets' target_sn (S/N per sub-exposure) the same way.
     """
+    from night_planner.targets_io import apply_sn_overrides, apply_time_overrides
     df = load_targets(targets_csv, mapping=mapping)
+    try:
+        df = apply_time_overrides(df, time_overrides)
+        df = apply_sn_overrides(df, sn_overrides)
+    except ValueError as err:
+        raise SystemExit(f'error: {err}')
     twilight = find_twilight(date_str)
 
     rows = []
@@ -202,6 +224,7 @@ def analyze_targets(targets_csv, date_str, mapping=None):
             'tags': row['tags'], 'DM': row['dm'],
             'priority': row['priority'], 'mag_band': row.get('mag_band', ''),
             't_target': row.get('t_target', float('nan')),
+            'target_sn': row.get('target_sn', float('nan')),
             'required': bool(row.get('required', False)),
         }
 
@@ -337,6 +360,15 @@ def parse_args(argv=None):
     p.add_argument('--force', action='append', default=[],
                    help='Force a target in with a truncated exposure, '
                         '"TNS@MINUTES". Repeatable.')
+    p.add_argument('--set-time', action='append', default=[],
+                   help='Set a target\'s time on target, "TNS@MINUTES", as if '
+                        'the table\'s t_target said so; it is then scheduled '
+                        'normally. Repeatable.')
+    p.add_argument('--set-sn', action='append', default=[],
+                   help='Set a target\'s S/N per sub-exposure, "TNS@SN", as if '
+                        'the table\'s target_sn said so. The target is then '
+                        'sized by the Kast ETC, even under --etc empirical. '
+                        'Repeatable.')
     p.add_argument('--targets-csv')
     p.add_argument('--output-dir')
     p.add_argument('--date')
@@ -655,7 +687,9 @@ def run(args):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    results_df, twilight = analyze_targets(targets_csv, date)
+    results_df, twilight = analyze_targets(
+        targets_csv, date, time_overrides=getattr(args, 'set_time', None),
+        sn_overrides=getattr(args, 'set_sn', None))
     night_start = start_override or twilight['evening_pst']
     night_end = twilight['morning_pst']
     if night_start >= night_end:

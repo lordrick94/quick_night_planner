@@ -98,6 +98,13 @@ def _persist(instrument, out, argv):
     plan = ADAPTERS[instrument](out)
     plan.request = {'instrument': instrument, 'argv': list(argv)}
     save_plan(plan)
+    # The Excel night plan travels with every saved plan (and so with the
+    # GUI's export zip). A failure here must not lose the plan itself.
+    try:
+        from .excel_plan import write_plan_excel
+        write_plan_excel([plan.output_dir])
+    except Exception as err:  # noqa: BLE001 -- report, keep the plan
+        print(f'WARNING: Excel night plan not written: {err}', file=sys.stderr)
     return plan
 
 
@@ -178,6 +185,14 @@ def main(argv=None):
     report.add_argument('--survey', default='CHIME/FRB')
     report.add_argument('--resource', help='FFFF-PZ Resource [plan directory name].')
 
+    excel = sub.add_parser('excel', help='Write the Excel night plan from saved '
+                                         'plan directories (one sheet per night).')
+    excel.add_argument('--plan-dir', action='append', required=True,
+                       help='a plan directory; repeat for a multi-night run, '
+                            'in night order')
+    excel.add_argument('--out', help='workbook path (default: in the first '
+                                     'plan directory)')
+
     serve = sub.add_parser('serve', help='Run the night-plan viewer (web UI).')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=8020)
@@ -189,6 +204,10 @@ def main(argv=None):
         return _serve(args)
     if args.command == 'report':
         return _report(args)
+    if args.command == 'excel':
+        from .excel_plan import write_plan_excel
+        print(write_plan_excel(args.plan_dir, args.out))
+        return 0
 
     module_name = INSTRUMENTS[args.instrument][args.command]
     if module_name is None:

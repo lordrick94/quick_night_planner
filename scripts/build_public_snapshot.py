@@ -11,7 +11,9 @@ writes a plain directory.
 2. Apply the private name/position rules (``replace_text.txt`` from
    scan_private_targets.py --filter-out) to every UTF-8 text file.
 3. Audit the copy: real names in paths or contents (text, office XML, PDF
-   text), exact real positions, and rounded real positions (within 0.1 deg; 0.2 deg for RA in hours).
+   text), exact real positions, and rounded real positions (within 0.1 deg;
+   0.2 deg for RA in hours). Top-level ``pvt_*`` folders (private, git-ignored)
+   are skipped. ``--audit-only --dest .`` audits this checkout itself.
 
 Usage
 -----
@@ -170,7 +172,8 @@ def audit(dest, names, pairs, positions, tol=0.1):
     ra, dec = positions[:, 0], positions[:, 1]
     exact, coarse = [], []
     for path in sorted(p for p in dest.rglob('*') if p.is_file()
-                       and not {'__pycache__', '.git'} & set(p.parts)):
+                       and not {'__pycache__', '.git'} & set(p.parts)
+                       and not p.relative_to(dest).parts[0].startswith('pvt_')):
         rel = path.relative_to(dest).as_posix()
         suffix = path.suffix.lower()
         text = spt.read_any_text(path, suffix)
@@ -219,7 +222,7 @@ def main():
     args = parser.parse_args()
 
     dest = Path(args.dest).expanduser().resolve()
-    if dest == REPO or REPO in dest.parents:
+    if not args.audit_only and (dest == REPO or REPO in dest.parents):
         sys.exit('--dest must be outside the repo')
     private = Path(args.private_dir).expanduser()
 

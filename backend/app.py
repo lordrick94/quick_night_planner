@@ -170,7 +170,9 @@ def list_instruments():
     from night_planner.adapters import SITES
     return [{'instrument': name,
              'telescope': SITES.get(name, {}).get('telescope', ''),
-             'can_build_excel': bool(spec.get('build')),
+             # The general builder (night_planner.excel_plan) handles
+             # every instrument.
+             'can_build_excel': True,
              'supports_own_targets': 'targets_csv' in spec.get('supports', set()),
              'supports': sorted(spec.get('supports', set()))}
             for name, spec in sorted(INSTRUMENTS.items())]
@@ -282,7 +284,7 @@ def inspect_targets(file: UploadFile = File(None), path: str = Query(None)):
         try:
             canonical = load_targets(frame, mapping=mapping)
             columns = ['name', 'ra_deg', 'dec_deg', 'mag', 'priority',
-                       't_target', 'required', 'tags', 'dm']
+                       't_target', 'target_sn', 'required', 'tags', 'dm']
             head = canonical[columns].head(PREVIEW_LIMIT).astype(object)
             # NaN isn't JSON; an unset t_target travels as null.
             preview = head.where(head.notna(), None).to_dict('records')
@@ -573,18 +575,75 @@ def get_plan(output_dir: str):
 
 class RegenerateRequest(BaseModel):
     output_dir: str
-    forced: list = []    # [{'target','minutes'}] -- replaces any previous set
+    # Each list, when given, replaces every previous flag of its kind; when
+    # omitted (None), that kind is kept as it was. So the Rejections page
+    # (forced) and the plan page (times, S/N) never undo each other.
+    forced: Optional[list] = None   # [{'target','minutes'}] -> --force
+    times: Optional[list] = None    # [{'target','minutes'}] -> --set-time
+    sns: Optional[list] = None      # [{'target','sn'}] -> --set-sn
+
+
+def _drop_flag(argv, flag):
+    """
+    argv without any `flag VALUE` pairs or `flag=VALUE` tokens.
+
+    Parameters
+    ----------
+    argv : list of str
+    flag : str, e.g. '--force'
+
+    Returns
+    -------
+    list of str
+    """
+    out, skip = [], False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token == flag:
+            skip = True
+            continue
+        if token.startswith(flag + '='):
+            continue
+        out.append(token)
+    return out
+
+
+def _flag_pairs(items, flag, key='minutes'):
+    """
+    [{'target', key}] -> [flag, 'NAME@VALUE', ...], skipping values <= 0.
+
+    Parameters
+    ----------
+    items : list of dict with 'target' and `key`
+    flag : str, e.g. '--set-time'
+    key : str, the value's field ('minutes', or 'sn' for --set-sn)
+
+    Returns
+    -------
+    list of str
+    """
+    out = []
+    for item in items:
+        value = float(item.get(key) or 0)
+        if value > 0:
+            out += [flag, f"{item['target']}@{value:g}"]
+    return out
 
 
 @app.post('/api/regenerate')
 def regenerate(req: RegenerateRequest):
     """
-    Re-run an existing plan with a different set of forced targets.
+    Re-run an existing plan with a different set of forced targets, user-set
+    times and/or per-target S/N goals.
 
     Reuses the exact inputs the plan was generated from, so nothing else
-    shifts underneath the comparison -- only the --force flags are
-    replaced. Which is the point: the observer decides to rescue a
-    rejected target *after* seeing why it was dropped.
+    shifts underneath the comparison -- only the --force (rejected targets
+    appended after the schedule) and --set-time (any target's time on
+    target, scheduled normally) and --set-sn (a target's S/N per
+    sub-exposure) flags are replaced. Which is the point: the
+    observer adjusts the night *after* seeing it.
     """
     plan = _require_plan(req.output_dir)
     request = plan.request or {}
@@ -593,21 +652,13 @@ def regenerate(req: RegenerateRequest):
             409, 'this plan predates recorded inputs, so it cannot be '
                  're-run automatically -- generate it again from Setup')
 
-    # Drop any previous --force pairs; the incoming list is authoritative.
-    argv, skip = [], False
-    for token in request['argv']:
-        if skip:
-            skip = False
-            continue
-        if token == '--force':
-            skip = True
-            continue
-        if token.startswith('--force='):
-            continue
-        argv.append(token)
-
-    for forced in req.forced:
-        argv += ['--force', f"{forced['target']}@{forced['minutes']}"]
+    argv = list(request['argv'])
+    if req.forced is not None:
+        argv = _drop_flag(argv, '--force') + _flag_pairs(req.forced, '--force')
+    if req.times is not None:
+        argv = _drop_flag(argv, '--set-time') + _flag_pairs(req.times, '--set-time')
+    if req.sns is not None:
+        argv = _drop_flag(argv, '--set-sn') + _flag_pairs(req.sns, '--set-sn', 'sn')
 
     try:
         return _plan_payload(generate_plan(request.get('instrument', plan.instrument), argv))
@@ -1083,8 +1134,18 @@ def log_report(req: ReportRequest):
 
 @app.get('/api/export')
 def export(output_dir: str, name: str = None):
-    """Zip the whole plan directory for download."""
+    """Zip the whole plan directory for download.
+
+    The Excel night plan is (re)built first when it is missing or older
+    than plan_result.json, so the zip always carries a current one.
+    """
+    from night_planner.excel_plan import excel_is_stale, write_plan_excel
     base = _safe_dir(output_dir)
+    if excel_is_stale(base):
+        try:
+            write_plan_excel([base])
+        except Exception as err:  # noqa: BLE001 -- still export the rest
+            print(f'WARNING: Excel night plan not written: {err}')
     stem = name or base.name
     archive = Path(tempfile.gettempdir()) / f'{stem}.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:

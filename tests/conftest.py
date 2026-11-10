@@ -3,7 +3,10 @@
 Created by JXP and Claude.
 
 Every test gets, automatically:
-- sockets blocked, so an accidental network call fails loudly; and
+- sockets blocked, so an accidental network call fails loudly;
+- astropy's IERS table used offline (no download, no age limit) -- with
+  the network blocked, a stale cache otherwise makes every sidereal-time
+  calculation raise; and
 - night_planner.etc.query_uco_etc replaced by fake_query(), a
   deterministic stand-in: S/N goes as sqrt(t), and degrades with magnitude,
   airmass and seeing.
@@ -78,9 +81,12 @@ def _offline_session():
     so a function-scoped block would arrive too late and let it reach the
     real ETC.
     """
+    from astropy.utils import iers
     from night_planner import etc
 
     mp = pytest.MonkeyPatch()
+    mp.setattr(iers.conf, 'auto_download', False)
+    mp.setattr(iers.conf, 'auto_max_age', None)
     mp.setattr(socket.socket, 'connect', _no_network)
     mp.setattr(etc, 'query_uco_etc', fake_query)
     yield

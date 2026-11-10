@@ -2007,3 +2007,70 @@ uninteresting ones -- log the reason at every skip point.
   notes and in a docstring. (3) Tests that run on real private data must
   not name a real target; `test_observing_log` now reads its `--extra` from
   the private `Keck-2026B-02/report_extra.txt`.
+- **v0.80 (2026-11-10)** — Work now happens in `~/Projects/quick_night_planner`
+  (LK's personal GitHub, `lordrick94/quick_night_planner`, history-free).
+  The old `night-planner` checkout is for reference only. GUI fact: `GET
+  /api/export` only zips the plan directory; the GUI never builds an Excel.
+  `.xlsx` appears only after the CLI `night-planner build --instrument lris`.
+  The LRIS builder still hard-codes its run (date default 2026-10-06, sheet
+  "October 6th"); Kast has no general Excel builder. `can_build_excel` in
+  `/api/instruments` is unused by the frontend.
+- **v0.81 (2026-11-10)** — The observers' Excel night-plan format is now
+  documented in `docs/excel_night_plan_format.md`, from the private
+  `pvt_templates/Lick_2026A-4_Night_plan.xlsx` (git-ignored). Key facts:
+  - Night sheets are named like `May 15th`.
+  - Columns A-O: LST, UT, local, Duration, End, Action, target, RA, DEC,
+    mag (r), sec mag, red side, blue side, Redshift, Comments.
+  - Only D (duration) is typed; C = E of the row above and E = C + D.
+  - Rows come in pairs: `slew to --> ` then `Science + overhead`.
+  - When generating, compute the UT/LST offsets per night (the template
+    hard-codes +7 h and +14:30) and write RA/Dec as text.
+  - `scripts/inspect_excel_template.py` dumps any workbook's structure.
+  - Any new `pvt_*` folder must be git-ignored at once.
+- **v0.82 (2026-11-10)** — General Excel builder `night_planner/excel_plan.py`
+  (any plan, any instrument; one sheet per night). It runs after every
+  generate and on export (when stale); CLI `night-planner excel --plan-dir ...`.
+  - LST formula: `A = MOD(C+$V$4+(C-$V$5)*0.00273791,1)`. V4 is the LST
+    offset at mid-night; V5 is that instant in column C's units.
+  - Reloaded plans have fixed-offset datetimes: use
+    `excel_plan.plan_tz(plan)` (ZoneInfo(plan.timezone)) for zone names.
+  - Standard names: compare letters and digits only.
+  - `scripts/verify_excel_plan.py` checks any workbook by recalculating it
+    in headless LibreOffice (`soffice` is installed).
+  - `tests/conftest.py` now makes IERS offline for the session, so plain
+    `pytest` works without the IERS settings I used to pass by hand.
+- **v0.83 (2026-11-10)** — Testing the GUI. As of today, `frb_env` still
+  has night-planner installed (editable) from the OLD repo; check with
+  `python -c "import night_planner; print(night_planner.__file__)"` run
+  from OUTSIDE either repo, because cwd shadows the install. Until LK runs
+  `pip install -e ~/Projects/quick_night_planner`, serve with
+  `PYTHONPATH=<new repo> python -m uvicorn backend.app:app --port 8050` from
+  the new repo. Mixed target tables (FFFF-PZ + manual rows) keep the FFFF-PZ
+  layout with per-row `Pri_filter`. They and their build scripts go in
+  `$NIGHT_PLANNER_PLANS/<run>/` (private).
+- **v0.84 (2026-11-10)** — `--set-time NAME@MIN` (both schedulers): sets
+  t_target for one plan without editing the table, so the target is
+  scheduled normally. Contrast `--force`, which appends a REJECTED target
+  after the schedule.
+  - `/api/regenerate` takes optional `forced` / `times` lists: a list that
+    is given replaces its flags; an omitted one is kept.
+  - The plan page edits times in the "on target" column.
+  - Kast's default time source is 'empirical', not 'ETC'; don't assume ETC
+    in tests.
+- **v0.85 (2026-11-10)** — Per-target S/N goal. A `target_sn` column
+  (aliases `sn_target`, `snr_target`, `target_snr`; bare `snr` is
+  deliberately *not* an alias, since tables use it for measured S/N) and
+  `--set-sn NAME@SN` (both schedulers) override the plan-wide `--target-sn`
+  for that row.
+  - Resolved by `targets_io.row_target_sn` / `has_own_sn`. Rows carry
+    `sn_goal`/`sn_goal_own` out of the exposure functions, which become
+    `ScheduledTarget.target_sn` / `target_sn_own` (None when no S/N was
+    involved).
+  - A set time (`t_target`/`--set-time`) beats an S/N goal.
+  - Kast: the default empirical rule has no S/N, so a row with its own goal
+    is sized by the 'kast' UCO ETC; the other rows stay empirical. A faint
+    host at a high goal can need hours and is then rejected with the reason.
+  - `/api/regenerate` takes `sns: [{target, sn}]` like `times`. The plan page
+    has an "S/N goal" box column; one "Apply changes & regenerate" button
+    sends both kinds of edit.
+  - The test fake ETC (conftest) has S/N ∝ sqrt(t), so time ∝ S/N².

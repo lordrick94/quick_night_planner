@@ -61,6 +61,7 @@ the planner takes the **first** spelling it finds, in the order listed:
 | mag_band | no | `mag_band`, `band`, `mag_filter`, `Pri_filter` | band of `mag`: `u g r i z` (SDSS), `B V` (Buser), `R I` (Cousins). FFFF-PZ's `Blanco:DECam-r` reads as `r` |
 | t_target | no | `t_target`, `t_obs`, `exptime_min` | minutes on target; **sets the time for that row** |
 | required | no | `required` | true/false (also yes/no, 1/0); default false |
+| target_sn | no | `target_sn`, `sn_target`, `snr_target`, `target_snr` | S/N per sub-exposure the ETC sizes **this row** for; beats `--target-sn` (see §5c) |
 
 **Every other column is carried through untouched.** Add `Notes`, `programme`,
 `z_phot`, whatever you like — nothing is lost, and the extra columns appear in
@@ -239,9 +240,47 @@ TGT0595,210.0,+12.3,19.4,,
   if its full time does not fit, it is rejected with
   `required: needs N min, no gap that long`.
   - LRIS has no partial backfill, so `required` changes nothing there yet.
+- **Without editing the table:** on the plan page, change any scheduled
+  target's "on target [min]" box and click **Apply changes &
+  regenerate**. This passes `--set-time NAME@MIN` (CLI: the same flag, repeatable),
+  which sets that row's `t_target` for this plan only. The target keeps its
+  normal place in the night, unlike **Force rejected targets in**, which
+  appends a rejected target after the schedule. Settings are kept by later
+  regenerates; clear a box to drop one.
 - Values that can't be read (`t_target = soon`, `required = maybe`) don't
   stop the table from loading. The row is treated as having no user time /
   as not required, and the target-table page lists the offending values.
+
+## 5c. A per-target S/N goal: `target_sn`
+
+The plan-wide `--target-sn` (default 10 per sub-exposure, median continuum
+S/N per pixel, in *each* arm) applies to every target. A `target_sn` column
+overrides it row by row: a bright host you only need a redshift for can ask
+for 5, a key target for 20. The ETC then sizes that row's sub-exposures for
+its own goal (time grows roughly as S/N²).
+
+```
+name,ra_deg,dec_deg,mag,target_sn
+SIMHOST1,10.5,40.0,19.2,5
+SIMHOST2,20.0,41.0,21.0,
+```
+
+- **Empty cell:** the plan-wide value. Unreadable values (`lots`) are
+  treated as empty and listed on the target-table page.
+- **A set time wins.** A row with both `t_target` and `target_sn` gets its
+  `t_target`; the S/N goal is not used.
+- **Kast's empirical rule has no S/N.** On a Kast plan using it (the
+  default), a row with its own `target_sn` is sized by the **Kast ETC**
+  instead; every other row stays on the empirical rule. Its time source then
+  reads `ETC`.
+- MOS blocks and fixed recipes don't depend on S/N, so the goal is ignored
+  for them.
+- **Without editing the table:** on the plan page, change any scheduled
+  target's **S/N goal** box and click **Apply changes & regenerate**. This
+  passes `--set-sn NAME@SN` (CLI: the same flag, repeatable), for this plan
+  only. Like `--set-time`, settings are kept by later regenerates, and
+  clearing a box drops one. A goal you set is marked *set here*; one from the
+  table, *table*.
 
 ## 6. What makes a list *good*, not just valid
 

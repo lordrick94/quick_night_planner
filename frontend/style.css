@@ -412,3 +412,12 @@ table.show-tags td.tagcol, table.show-tags th.tagcol { display: table-cell; }
 .tab.active { background: var(--card); color: var(--accent); font-weight: 600; }
 table.compare { margin-bottom: 1rem; }
 table.compare tr.active td { background: #eff6ff; }
+
+/* Per-target time edits on the plan page */
+.time-edit { align-items: center; gap: 0.8rem; margin: 0.6rem 0; }
+.time-edit .hint { flex: 1; }
+table.data input.tmin { width: 4.6rem; margin: 0; padding: 0.15rem 0.3rem;
+  text-align: right; font: inherit; }
+table.data input.tmin.set { border-color: var(--forced, #c77d00); }
+table.data input.tmin.changed { outline: 2px solid var(--accent, #3b6fd8);
+  background: color-mix(in srgb, var(--accent, #3b6fd8) 10%, transparent); }

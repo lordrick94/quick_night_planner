@@ -98,6 +98,12 @@ class ScheduledTarget:
     # FFFF-PZ tags and DM, for the plan table (T2.5).
     tags: str = ''
     dm: Optional[float] = None
+    # The S/N per sub-exposure the ETC sized this target for (2026-11-10):
+    # its own target_sn (table column or --set-sn) when target_sn_own, else
+    # the plan's. None when no S/N was involved (user time, MOS block,
+    # fixed recipe, the empirical Kast rule).
+    target_sn: Optional[float] = None
+    target_sn_own: bool = False
 
     def to_dict(self):
         d = asdict(self)

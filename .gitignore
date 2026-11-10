@@ -222,3 +222,5 @@ __marimo__/
 # NIGHT_PLANNER_PLANS points the code at the private directory.
 pvt_Nighplans/
 Night_plans/
+# Private Excel templates (real past plans used as a format reference).
+pvt_templates/

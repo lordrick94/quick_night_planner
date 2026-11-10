@@ -522,13 +522,17 @@ function renderInspection(data, opts = {}) {
   // Priority values the table carried but we could not read as numbers. The
   // targets are still perfectly usable; they just have no ranking, and that
   // has to be said rather than silently defaulted.
+  const coercionText = {
+    required: ['true/false', 'not required'],
+    t_target: ['positive minutes', 'having no user time (the ETC decides)'],
+    target_sn: ['a positive S/N', "using the plan's target S/N"],
+  };
   Object.entries(data.field_coercions || {}).forEach(([field, c]) => {
     if (!c.n_coerced) return;
+    const [wanted, fallback] = coercionText[field] || ['a value', 'unset'];
     wrap.append(notice(
       `The '${c.column}' column has ${c.n_coerced} value(s) that can't be read as `
-      + `${field === 'required' ? 'true/false' : 'positive minutes'} `
-      + `(${c.examples.join(', ')}) — those rows are treated as `
-      + `${field === 'required' ? 'not required' : 'having no user time (the ETC decides)'}.`));
+      + `${wanted} (${c.examples.join(', ')}) — those rows are treated as ${fallback}.`));
   });
   const coerced = data.priority_coercions;
   if (coerced && coerced.n_coerced) {
@@ -846,6 +850,11 @@ async function renderPlan() {
       + plan.idle_gaps.map((g) => `${hhmm(g.start)}–${hhmm(g.end)}`).join(', ')));
   }
 
+  // Times the observer has already set (--set-time NAME@MIN in the plan's
+  // recorded inputs), so they show as set and survive the next regenerate.
+  const setTimes = userSetTimes(plan);
+  const setSns = userSetValues(plan, '--set-sn');
+
   $('#plan-table').innerHTML =
     '<tr><th>Science (local)</th><th>Target</th><th>Mode</th>'
     + '<th class="num">mag</th><th class="num">AM</th><th>Exposure [n × s]</th>'
@@ -853,6 +862,10 @@ async function renderPlan() {
     + '<th class="num">on target [min]</th><th class="num">readout [min]</th>'
     + '<th class="num" title="median continuum S/N per pixel, red arm: one '
     + 'sub-exposure / all combined">S/N red [sub / comb]</th>'
+    + '<th class="num" title="median continuum S/N per pixel, per sub-exposure, '
+    + 'that the ETC sizes this target for. Set one to override the plan-wide '
+    + 'value; on the empirical Kast rule this sends the target to the Kast ETC.">'
+    + 'S/N goal [per sub]</th>'
     + '<th class="tagcol">Tags</th><th class="num tagcol">DM</th>'
     + '<th>Notes</th></tr>'
     + plan.schedule.map((t) => {
@@ -872,12 +885,13 @@ async function renderPlan() {
         + `<td class="num">${Math.round(t.acq_min || 0)}</td>`
         + `<td class="num" title="${t.time_source ? `time from: ${t.time_source}` : ''}`
         + `${t.etc_min != null && t.time_source !== 'ETC' ? `; ETC estimate ${t.etc_min.toFixed(0)} min` : ''}">`
-        + `${Math.round(t.on_target_min)}`
-        + `${t.time_source ? `<br><span class="hint">${t.time_source}`
+        + minutesBox(t, setTimes)
+        + `${t.time_source ? `<br><span class="hint">${t.name in setTimes ? 'set here' : t.time_source}`
           + `${t.etc_min != null && t.time_source === 'user' ? ` (ETC ${t.etc_min.toFixed(0)})` : ''}</span>` : ''}</td>`
         + `<td class="num">${(t.readout_min || 0).toFixed(1)}</td>`
         + `<td class="num">${t.sn_sub_red != null
           ? `${t.sn_sub_red.toFixed(1)} / ${t.sn_comb_red?.toFixed(1) ?? '—'}` : '—'}</td>`
+        + `<td class="num">${snBox(t, setSns)}</td>`
         + `<td class="tagcol">${t.tags || ''}</td>`
         + `<td class="num tagcol">${t.dm != null ? Math.round(t.dm) : ''}</td>`
         + `<td>${t.notes || ''}</td></tr>`;
@@ -885,6 +899,109 @@ async function renderPlan() {
   const tagToggle = $('#plan-show-tags');
   tagToggle.addEventListener('change', () =>
     $('#plan-table').classList.toggle('show-tags', tagToggle.checked));
+  wireTimeEdits(plan, setTimes, setSns);
+}
+
+/* Per-target time and S/N edits on the plan page (--set-time, --set-sn). */
+
+function userSetValues(plan, flag) {
+  // NAME -> value for every `flag NAME@VALUE` in the plan's recorded inputs.
+  const argv = plan.request?.argv || [];
+  const out = {};
+  argv.forEach((tok, i) => {
+    const spec = tok === flag ? argv[i + 1]
+      : tok.startsWith(`${flag}=`) ? tok.slice(flag.length + 1) : null;
+    if (!spec) return;
+    const at = spec.lastIndexOf('@');
+    if (at > 0) out[spec.slice(0, at)] = Number(spec.slice(at + 1));
+  });
+  return out;
+}
+
+function userSetTimes(plan) {
+  return userSetValues(plan, '--set-time');
+}
+
+function snBox(t, setSns) {
+  // Forced rows, MOS blocks and fixed recipes have no S/N-driven time.
+  const fixed = (t.notes || '').startsWith('FORCED')
+    || ['MOS block', 'fixed recipe'].includes(t.time_source);
+  const goal = t.target_sn != null ? Math.round(t.target_sn * 10) / 10 : '';
+  if (fixed) return goal === '' ? '—' : `${goal}`;
+  const isSet = t.name in setSns ? ' set' : '';
+  const note = t.time_source === 'user'
+    ? 'its time is set, so the S/N goal only counts once the time is cleared'
+    : t.time_source === 'empirical'
+      ? 'empirical rule (no S/N); set one to size it with the Kast ETC'
+      : t.target_sn_own ? 'this target\'s own S/N goal' : 'the plan-wide S/N goal';
+  const tag = t.name in setSns ? 'set here' : t.target_sn_own ? 'table' : '';
+  return `<input type="number" class="tmin tsn${isSet}" min="0.1" step="any" `
+    + `data-target="${t.name}" data-orig="${goal}" value="${goal}" `
+    + `placeholder="—" title="${note}" aria-label="S/N goal for ${t.name}">`
+    + (tag ? `<br><span class="hint">${tag}</span>` : '');
+}
+
+function minutesBox(t, setTimes) {
+  const value = Math.round(t.on_target_min);
+  // A forced target's minutes belong to the Rejections page's list.
+  if ((t.notes || '').startsWith('FORCED')) {
+    return `<span title="forced in: change its minutes on the Rejections page">${value}</span>`;
+  }
+  const isSet = t.name in setTimes ? ' set' : '';
+  return `<input type="number" class="tmin tmt${isSet}" min="1" step="1" `
+    + `data-target="${t.name}" data-orig="${value}" value="${value}" `
+    + `aria-label="minutes on target for ${t.name}">`;
+}
+
+function wireTimeEdits(plan, setTimes, setSns) {
+  const btn = $('#times-btn');
+  const status = $('#times-status');
+  const kinds = [
+    { boxes: [...document.querySelectorAll('#plan-table input.tmt')], set: setTimes,
+      key: 'times', field: 'minutes' },
+    { boxes: [...document.querySelectorAll('#plan-table input.tsn')], set: setSns,
+      key: 'sns', field: 'sn' },
+  ];
+  const isChanged = (b, set) => b.value === ''
+    ? b.dataset.target in set                // cleared: drop an existing setting
+    : Number(b.value) !== Number(b.dataset.orig);
+  const refresh = () => {
+    let any = false;
+    kinds.forEach(({ boxes, set }) => boxes.forEach((b) => {
+      const changed = isChanged(b, set);
+      b.classList.toggle('changed', changed);
+      any = any || changed;
+    }));
+    btn.disabled = !any;
+  };
+  kinds.forEach(({ boxes }) => boxes.forEach((b) => b.addEventListener('input', refresh)));
+  refresh();
+
+  btn.onclick = async () => {
+    const body = { output_dir: plan.output_dir };
+    kinds.forEach(({ boxes, set, key, field }) => {
+      const values = { ...set };
+      boxes.forEach((b) => {
+        if (!isChanged(b, set)) return;
+        if (b.value === '') delete values[b.dataset.target];
+        else if (Number(b.value) > 0) values[b.dataset.target] = Number(b.value);
+      });
+      body[key] = Object.entries(values).map(([target, v]) => ({ target, [field]: v }));
+    });
+    btn.disabled = true;
+    status.textContent = 'Regenerating with your changes — a minute or two while the ETC is queried…';
+    try {
+      state.plan = await api('/api/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      await renderPlan();
+    } catch (err) {
+      status.replaceChildren(notice(err.message, true));
+      btn.disabled = false;
+    }
+  };
 }
 
 /* ------------------------------------------------------------ rejections */

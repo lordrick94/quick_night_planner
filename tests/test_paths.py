@@ -24,7 +24,7 @@ from night_planner.paths import (
 
 # Directories whose contents are generated or vendored, not authored here.
 SKIP_DIRS = {'__pycache__', '.git', '.pytest_cache', 'Night_plans',
-             'pvt_Nighplans', 'node_modules'}
+             'pvt_Nighplans', 'pvt_templates', 'node_modules'}
 
 # The portability checker necessarily spells these patterns out, so it
 # cannot be scanned by the rule it enforces.
@@ -111,7 +111,7 @@ def test_private_plan_directories_are_git_ignored():
     """
     if shutil.which('git') is None or not (REPO_ROOT / '.git').exists():
         pytest.skip('not a git checkout')
-    for name in ('pvt_Nighplans/x.csv', 'Night_plans/x.csv'):
+    for name in ('pvt_Nighplans/x.csv', 'Night_plans/x.csv', 'pvt_templates/x.xlsx'):
         res = subprocess.run(['git', 'check-ignore', '-q', name], cwd=REPO_ROOT)
         assert res.returncode == 0, f'{name} is not git-ignored'
 

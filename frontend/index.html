@@ -163,6 +163,14 @@
   <div id="overruns"></div>
   <label class="check"><input type="checkbox" id="plan-show-tags">
     <span>Show FFFF-PZ tags and DM</span></label>
+  <div class="row time-edit">
+    <button type="button" class="primary" id="times-btn" disabled>Apply changes &amp; regenerate</button>
+    <span id="times-status" class="hint">Change &ldquo;on target [min]&rdquo; or
+      &ldquo;S/N goal&rdquo; for any scheduled target, then regenerate: the
+      target keeps its normal place in the night (like a <code>t_target</code>
+      or <code>target_sn</code> in the table). A set time beats an S/N goal.
+      Clear a box to go back to the plan&rsquo;s own value.</span>
+  </div>
   <table id="plan-table" class="data"></table>
 </template>
 

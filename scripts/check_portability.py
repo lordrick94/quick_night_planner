@@ -52,7 +52,7 @@ SCANNED_SUFFIXES = {'.py', '.md', '.toml', '.cfg', '.txt', '.yaml', '.yml',
                     '.json', '.js', '.html', '.css', '.sh'}
 
 # Directories whose contents are run records, not code.
-SKIPPED_DIRS = {'.git', 'Logs', 'Night_plans', 'pvt_Nighplans', 'claude_prompts', 'context',
+SKIPPED_DIRS = {'.git', 'Logs', 'Night_plans', 'pvt_Nighplans', 'pvt_templates', 'claude_prompts', 'context',
                 '__pycache__', '.pytest_cache', 'test_targs', 'build',
                 'dist', '.venv'}
 

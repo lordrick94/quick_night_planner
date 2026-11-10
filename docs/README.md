@@ -16,6 +16,7 @@ Created by JXP and Claude
 - **[Testing Guide](Testing_guide.md)** - How to use the test suite and edge case datasets
 - **[Priority System](priority_system.md)** - What the planner does with a priority column: the float contract, tiered scheduling, what outranks priority, and what it never touches
 - **[Priority: night-planner vs AstroScheduler](priority_comparison_astroscheduler.md)** - Comparison with the UCSC AstroScheduler priority-sequential Branch and Bound solver
+- **[Excel Night-Plan Format](excel_night_plan_format.md)** - Every sheet, column, formula and style of the observers' Excel night plan, its quirks, and how a general builder maps a plan onto it
 
 ### Run-Specific Documentation
 

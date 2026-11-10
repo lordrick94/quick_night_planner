@@ -32,7 +32,7 @@ from astropy import units as u
 
 REQUIRED_FIELDS = ('name', 'ra', 'dec', 'mag')
 OPTIONAL_FIELDS = ('pox', 'tags', 'dm', 'priority', 'mag_band', 't_target',
-                   'required')
+                   'required', 'target_sn')
 
 # Priority convention, shared with the UCSC AstroScheduler so the two stay
 # comparable: a float, lower = more important. Every target defaults to the
@@ -70,6 +70,10 @@ ALIASES = {
     # nothing (never truncated into a partial).
     't_target': ['t_target', 't_obs', 'exptime_min'],
     'required': ['required'],
+    # Target S/N per sub-exposure for this row (2026-11-10); beats the
+    # plan-wide --target-sn. Bare 'snr'/'sn' are deliberately not aliases:
+    # tables use them for a *measured* S/N.
+    'target_sn': ['target_sn', 'sn_target', 'snr_target', 'target_snr'],
 }
 
 _TRUE = {'true', 'yes', 'y', '1', 't'}
@@ -370,6 +374,10 @@ def load_targets(source, mapping=None):
     source_col = mapping.columns.get('required')
     out['required'] = (df[source_col].map(parse_required).map(bool)
                        if source_col else False)
+    source_col = mapping.columns.get('target_sn')
+    out['target_sn'] = (df[source_col].map(parse_t_target).map(
+        lambda v: np.nan if v is None else v).astype(float)
+        if source_col else np.nan)
 
     # Priority is handled apart from the loop above because it is the one
     # optional field the scheduler *computes with*: every consumer may assume
@@ -453,6 +461,161 @@ def priority_coercions(source, mapping=None):
             'n_coerced': int(bad.sum()), 'examples': examples}
 
 
+def parse_value_spec(spec, flag='--set-time', what='minutes'):
+    """
+    One NAME@VALUE flag value (--set-time, --set-sn).
+
+    Parameters
+    ----------
+    spec : str, e.g. 'SIMFRB123@45'. The last '@' splits, so a name may
+        itself contain '@'.
+    flag : str, the flag's name, for the error message
+    what : str, what VALUE is, for the error message
+
+    Returns
+    -------
+    (name, value) with value a positive float.
+
+    Raises
+    ------
+    ValueError for a malformed spec or a non-positive value.
+    """
+    name, sep, value = str(spec).rpartition('@')
+    if not sep or not name.strip():
+        raise ValueError(f'{flag} wants NAME@{what.upper()}, got {spec!r}')
+    number = parse_t_target(value.strip())
+    if number is None or pd.isna(number):
+        raise ValueError(f'{flag} {spec!r}: {what} must be a positive number')
+    return name.strip(), float(number)
+
+
+def parse_time_spec(spec):
+    """
+    One --set-time value, "NAME@MINUTES".
+
+    Parameters
+    ----------
+    spec : str
+
+    Returns
+    -------
+    (name, minutes) with minutes a positive float.
+
+    Raises
+    ------
+    ValueError for a malformed spec or a non-positive time.
+    """
+    return parse_value_spec(spec, '--set-time', 'minutes')
+
+
+def _apply_overrides(df, overrides, column, flag, what):
+    """
+    Set `column` for named targets from NAME@VALUE overrides (a copy).
+
+    Parameters
+    ----------
+    df : DataFrame from load_targets (has 'name' and `column`)
+    overrides : list of "NAME@VALUE" strings, or of (name, value)
+    column, flag, what : str, the column to set; the flag and the value's
+        meaning, for error messages
+
+    Returns
+    -------
+    DataFrame (df itself when there is nothing to apply, else a copy)
+
+    Raises
+    ------
+    ValueError naming any target that is not in the table.
+    """
+    pairs = [parse_value_spec(o, flag, what) if isinstance(o, str)
+             else (str(o[0]), float(o[1])) for o in (overrides or [])]
+    if not pairs:
+        return df
+    out = df.copy()
+    if column not in out:
+        out[column] = np.nan
+    missing = [n for n, _ in pairs if not (out['name'] == n).any()]
+    if missing:
+        raise ValueError(f'{flag}: no target named ' + ', '.join(missing)
+                         + ' in the target table')
+    for name, value in pairs:
+        out.loc[out['name'] == name, column] = value
+    return out
+
+
+def apply_time_overrides(df, overrides):
+    """
+    Set t_target (minutes on target, used as given) for named targets, as
+    if the table had said so. Used by --set-time, so an observer can change
+    a scheduled target's time from the GUI without editing the table.
+
+    Parameters
+    ----------
+    df : DataFrame from load_targets (has 'name' and 't_target')
+    overrides : list of "NAME@MINUTES" strings, or of (name, minutes)
+
+    Returns
+    -------
+    DataFrame (a copy, with t_target set for those rows)
+
+    Raises
+    ------
+    ValueError naming any target that is not in the table.
+    """
+    return _apply_overrides(df, overrides, 't_target', '--set-time', 'minutes')
+
+
+def apply_sn_overrides(df, overrides):
+    """
+    Set target_sn (S/N per sub-exposure the ETC sizes this target for) for
+    named targets, as if the table had said so. Used by --set-sn.
+
+    Parameters
+    ----------
+    df : DataFrame from load_targets (has 'name' and 'target_sn')
+    overrides : list of "NAME@SN" strings, or of (name, sn)
+
+    Returns
+    -------
+    DataFrame (a copy, with target_sn set for those rows)
+
+    Raises
+    ------
+    ValueError naming any target that is not in the table.
+    """
+    return _apply_overrides(df, overrides, 'target_sn', '--set-sn', 'S/N')
+
+
+def row_target_sn(row, plan_sn):
+    """
+    The S/N goal for one target: its own target_sn when set, else the plan's.
+
+    Parameters
+    ----------
+    row : mapping, may carry 'target_sn'
+    plan_sn : float, the plan-wide target S/N
+
+    Returns
+    -------
+    float
+    """
+    own = row.get('target_sn') if hasattr(row, 'get') else None
+    try:
+        own = float(own)
+    except (TypeError, ValueError):
+        return float(plan_sn)
+    return own if own > 0 else float(plan_sn)
+
+
+def has_own_sn(row):
+    """True when a row carries its own positive target_sn."""
+    own = row.get('target_sn') if hasattr(row, 'get') else None
+    try:
+        return float(own) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def field_coercions(source, mapping=None):
     """
     Unreadable t_target / required values, for reporting to the user
@@ -467,8 +630,8 @@ def field_coercions(source, mapping=None):
 
     Outputs
     -------
-    dict field -> {'column', 'n_coerced', 'examples'} for t_target and
-    required; fields the table doesn't have are left out.
+    dict field -> {'column', 'n_coerced', 'examples'} for t_target,
+    required and target_sn; fields the table doesn't have are left out.
     """
     df = (pd.read_csv(source) if isinstance(source, (str, os.PathLike))
           else source)
@@ -476,7 +639,8 @@ def field_coercions(source, mapping=None):
         mapping = detect_mapping(df)
     out = {}
     for field, parse in (('t_target', parse_t_target),
-                         ('required', parse_required)):
+                         ('required', parse_required),
+                         ('target_sn', parse_t_target)):
         column = mapping.columns.get(field)
         if not column:
             continue
