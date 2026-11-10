@@ -1,0 +1,66 @@
+# Telescope pointing-limit template
+# Hour-angle convention used here:
+#   HA = Local Sidereal Time - Target Right Ascension
+#   east of the meridian  -> negative HA
+#   west of the meridian  -> positive HA
+#
+# Example limits below:
+#   maximum eastward tracking: 5 h 40 m east  -> HA >= -5:40
+#   maximum westward tracking: 3 h 45 m west  -> HA <= +3:45
+
+telescope:
+  name: "Lick Observatory Telescope"
+  site: "Lick Observatory"
+
+  pointing_limits:
+    hour_angle:
+      convention: "HA = LST - RA"
+      units: "hours"
+
+      east_limit:
+        direction: "east"
+        value_hms: "05:40:00"
+        signed_hours: -5.6666667
+        rule: "target_hour_angle_hours >= signed_hours"
+
+      west_limit:
+        direction: "west"
+        value_hms: "03:45:00"
+        signed_hours: 3.75
+        rule: "target_hour_angle_hours <= signed_hours"
+
+      valid_range:
+        minimum_hours: -5.6666667
+        maximum_hours: 3.75
+        expression: "-5.6666667 <= target_hour_angle_hours <= 3.75"
+
+    altitude:
+      minimum_deg: null
+      maximum_deg: null
+
+    azimuth:
+      allowed_ranges_deg: []
+      excluded_ranges_deg: []
+
+    declination:
+      minimum_deg: -30
+      maximum_deg: 81
+
+    zenith_avoidance:
+      enabled: false
+      radius_deg: null
+
+    meridian:
+      crossing_allowed: true
+      flip_required: false
+
+    tracking:
+      limits_apply_to:
+        - "exposure_start"
+        - "entire_exposure"
+      safety_margin_minutes: 10
+
+    validation:
+      reject_if_outside_limits: true
+      require_full_exposure_within_limits: true
+      warn_within_margin_minutes: 20

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>night-planner</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js" charset="utf-8"></script>
+</head>
+<body>
+
+<header>
+  <a href="#/" class="brand">night&#8209;planner</a>
+  <nav id="nav"></nav>
+  <span id="context"></span>
+</header>
+
+<main id="view"></main>
+
+<template id="tpl-home">
+  <h1>Plan a night</h1>
+  <p class="lede">Pick the instrument and the date of observation.</p>
+  <form id="home-form" class="card">
+    <label>Instrument
+      <select id="instrument"></select>
+    </label>
+    <label>Date of observation (evening, local)
+      <input type="date" id="date" required>
+    </label>
+    <button type="submit">Continue</button>
+  </form>
+
+  <h2>Open an existing plan</h2>
+  <div id="plan-list" class="card"></div>
+</template>
+
+<template id="tpl-setup">
+  <h1>Targets and constraints</h1>
+  <p class="lede" id="setup-lede"></p>
+
+  <section class="card">
+    <h2>Configuration</h2>
+    <p class="hint">What the exposure-time calculator models. Only the settings the
+      UCO/Lick ETC can model are offered; the defaults are the standard setup.</p>
+    <div class="grid" id="config-fields"></div>
+  </section>
+
+  <section class="card">
+    <h2>1. Target table <span class="req" title="required">*</span></h2>
+    <p class="hint">Any table will do &mdash; FFFF&#8209;PZ pulls and your own
+      spreadsheets alike. Columns are detected automatically; you'll only be
+      asked when something is genuinely ambiguous.</p>
+    <p class="hint" id="column-list"></p>
+    <p class="hint">A <code>priority</code> column in the table is read: lower is
+      scheduled first, only the order of the values matters, and fractions are
+      allowed (1.5 sits between 1 and 2). You can also set priorities on the
+      next page.</p>
+    <div class="row">
+      <input type="file" id="targets-file" accept=".csv">
+      <span class="or">or</span>
+      <input type="text" id="targets-path" placeholder="path to a CSV on disk" size="46">
+    </div>
+    <div id="inspect-result"></div>
+  </section>
+
+  <section class="card">
+    <h2>2. Constraints</h2>
+    <div class="grid">
+      <label>Start time <span class="hint">optional; blank = evening twilight</span>
+        <input type="text" id="start" placeholder="HH:MM local">
+      </label>
+      <label>Max targets <span class="hint">optional</span>
+        <input type="number" id="max-targets" placeholder="20" min="1">
+      </label>
+      <label>Output directory <span class="req" title="required">*</span>
+        <input type="text" id="output-dir" placeholder="pvt_Nighplans/&hellip;" required>
+      </label>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" id="no-partials">
+      <span>Leave idle time idle
+        <span class="hint">by default a target dropped for want of time is
+          scheduled anyway for whatever is left, marked as a partial so you
+          can drop it at the telescope &mdash; tick this to stop that</span></span>
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="assume-masks">
+      <span>Schedule MOS targets without a mask yet
+        <span class="hint">allocates their time on the commitment that we'll do our
+          best to mill the mask before the run &mdash; submit the designs</span></span>
+    </label>
+
+    <h3>Blocked windows <span class="hint">optional; ToO, weather hold, engineering</span></h3>
+    <div id="blocks"></div>
+    <button type="button" class="ghost" id="add-block">+ blocked window</button>
+
+  </section>
+
+  <section class="card">
+    <h2>3. Scenarios <span class="hint">optional</span></h2>
+    <p class="hint">Make several plans for the same night under different conditions,
+      shown as tabs with a comparison. Each scenario overrides the seeing and/or
+      start time and can add a blocked window. Leave empty for a single plan.</p>
+    <div class="row" id="scenario-presets"></div>
+    <div id="scenarios"></div>
+    <button type="button" class="ghost" id="add-scenario">+ scenario</button>
+  </section>
+
+  <p class="hint">Next you'll set each target's priority &mdash; the scheduler
+    fills the night from the top priority down, and nothing lower ever pushes
+    out something higher. Leave them all equal and the night is scheduled
+    exactly as it always was.</p>
+
+  <button id="inspect-btn" class="primary" type="button">Read targets &amp; set priorities &rarr;</button>
+  <div id="inspect-result-foot"></div>
+</template>
+
+<template id="tpl-priorities">
+  <h1>Set priorities</h1>
+  <p class="lede" id="prio-lede"></p>
+  <div id="prio-notes"></div>
+
+  <section class="card">
+    <h2>Priority</h2>
+    <p class="hint">Lower is more important &mdash; 1 is scheduled first.
+      Only the order of the values matters, not their size. Fractions are
+      allowed, so something can sit between two tiers without renumbering
+      everything below it. Targets sharing a number compete with each other
+      exactly as they do today; a lower tier only ever gets the time the
+      tiers above it left behind. Values from a <code>priority</code> column in
+      your table are already filled in.</p>
+    <label class="check"><input type="checkbox" id="prio-show-tags">
+      <span>Show FFFF-PZ tags and DM</span></label>
+    <div class="row">
+      <label style="margin:0">Set every target to
+        <input type="number" id="prio-bulk" step="0.5" min="0">
+      </label>
+      <button type="button" class="ghost" id="prio-bulk-apply">Apply to all</button>
+      <span id="prio-tiers" class="hint"></span>
+    </div>
+    <div id="prio-list" class="preview-scroll"></div>
+  </section>
+
+  <div class="row">
+    <button type="button" class="ghost" id="prio-back">&larr; Back to targets</button>
+    <button id="generate-btn" class="primary">Generate plan</button>
+  </div>
+  <div id="generate-status"></div>
+</template>
+
+<template id="tpl-plan">
+  <h1>Night plan</h1>
+  <div id="scenario-tabs"></div>
+  <div id="plan-head"></div>
+  <details class="card" id="assumptions-card">
+    <summary><h2>Assumptions</h2> <span class="hint">what this plan assumed</span></summary>
+    <table class="data" id="assumptions-table"></table>
+  </details>
+  <div id="timeline"></div>
+  <div id="legend" class="legend"></div>
+  <div id="overruns"></div>
+  <label class="check"><input type="checkbox" id="plan-show-tags">
+    <span>Show FFFF-PZ tags and DM</span></label>
+  <table id="plan-table" class="data"></table>
+</template>
+
+<template id="tpl-rejections">
+  <h1>Why each target is in or out</h1>
+  <div id="rej-summary"></div>
+
+  <section class="card" id="rescue-card">
+    <h2>Force rejected targets in</h2>
+    <p class="hint">Pick any rejected target and give it a time. It will be
+      placed after the last scheduled target, with however many minutes you
+      allow &mdash; the planner still checks the telescope can point there, and
+      says so if it can't.</p>
+    <div class="row">
+      <select id="rescue-pick"></select>
+      <input type="number" id="rescue-mins" min="1" placeholder="min">
+      <button type="button" id="rescue-add">Add</button>
+    </div>
+    <div id="rescue-chosen"></div>
+    <div class="row">
+      <button type="button" class="primary" id="regen-btn">Regenerate plan</button>
+      <span id="regen-status" class="hint"></span>
+    </div>
+  </section>
+
+  <table id="rej-table" class="data"></table>
+</template>
+
+<template id="tpl-finders">
+  <h1>Finder charts</h1>
+  <section class="card">
+    <h2>Generate</h2>
+    <p class="hint">The offset star comes from Gaia and the image from
+      Pan&#8209;STARRS &mdash; no FFFF&#8209;PZ needed, so this works for any
+      target table.</p>
+    <fieldset class="slit-mode">
+      <legend>Slit angle</legend>
+      <label class="check">
+        <input type="radio" name="fd-slit" value="parallactic" checked>
+        <span>Parallactic
+          <span class="hint">dispersion-weighted over each target's own
+            exposure &mdash; loses the least blue light</span></span>
+      </label>
+      <label class="check">
+        <input type="radio" name="fd-slit" value="candidates">
+        <span>Through both PATH candidates
+          <span class="hint">needs FFFF&#8209;PZ targets &mdash; anything
+            without a second candidate falls back to parallactic and is
+            listed in the report</span></span>
+      </label>
+    </fieldset>
+    <label class="check">
+      <input type="checkbox" id="fd-overwrite">
+      <span>Re-render charts that already exist</span>
+    </label>
+    <div class="row">
+      <button type="button" class="primary" id="fd-generate">Generate finders</button>
+      <span id="fd-status" class="hint"></span>
+    </div>
+    <div id="fd-progress" hidden>
+      <progress id="fd-bar" max="1" value="0"></progress>
+      <span id="fd-progress-text" class="hint"></span>
+    </div>
+    <div id="fd-notes"></div>
+    <div id="fd-report"></div>
+  </section>
+  <div id="finder-grid" class="finders"></div>
+</template>
+
+<template id="tpl-starlist">
+  <h1>Starlist</h1>
+  <section class="card">
+    <h2>Generate</h2>
+    <label class="check">
+      <input type="checkbox" id="sl-standards" checked>
+      <span>Include flux standards
+        <span class="hint">picked from the PypeIt standard-star library at the
+          times they'd actually be taken, lowest airmass first</span></span>
+    </label>
+    <div class="row">
+      <label style="margin:0">Max airmass for standards
+        <input type="number" id="sl-maxam" value="2.0" step="0.1" min="1">
+      </label>
+      <button type="button" class="primary" id="sl-generate">Generate starlist</button>
+      <span id="sl-status" class="hint"></span>
+    </div>
+    <div id="sl-notes"></div>
+  </section>
+  <div class="row" id="starlist-actions"></div>
+  <pre id="starlist-text" class="starlist"></pre>
+</template>
+
+<template id="tpl-nightchart">
+  <h1>Night chart</h1>
+  <p class="hint">Every scheduled target across the night. The faint dashed
+    curve is the whole track; the thick segment is when it is actually being
+    observed. Low airmass is at the top.</p>
+  <div class="row">
+    <label class="check">
+      <input type="checkbox" id="nc-rejected">
+      <span>Also draw rejected targets
+        <span class="hint">what you turned down, and when it was up</span></span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="nc-moon" checked>
+      <span>Moon</span>
+    </label>
+  </div>
+  <div id="nightchart-plot"></div>
+  <div id="nightchart-note" class="hint"></div>
+</template>
+
+<template id="tpl-airmass">
+  <h1>Airmass through the night</h1>
+  <div class="row">
+    <label>Target <select id="airmass-target"></select></label>
+  </div>
+  <div id="airmass-plot"></div>
+  <div id="airmass-note" class="hint"></div>
+  <h2 style="margin-top:1.25rem">Predicted S/N</h2>
+  <div id="sn-plot"></div>
+  <div id="sn-note" class="hint"></div>
+</template>
+
+<template id="tpl-log">
+  <h1>Observing log</h1>
+  <p class="lede" id="log-lede"></p>
+  <div class="row log-toolbar">
+    <span id="log-saved" class="hint"></span>
+  </div>
+  <div id="log-errors"></div>
+
+  <section class="card" id="log-night">
+    <h2>Night</h2>
+    <div id="log-night-fields" class="log-grid"></div>
+    <div id="log-scenario"></div>
+    <h3>Time lost</h3>
+    <div id="log-lost"></div>
+    <button type="button" class="ghost" id="log-lost-add">Add time lost</button>
+  </section>
+
+  <details class="card" id="log-cal-card" open>
+    <summary><h2>Calibrations <span id="log-cal-count" class="hint"></span></h2></summary>
+    <p class="hint">Take these when it suits the night: they are not on the
+      timeline. Record the UT and frame numbers, because the reduction needs the
+      calibration file ranges as much as the science ones.</p>
+    <div id="log-cals"></div>
+  </details>
+
+  <details class="card" open>
+    <summary><h2>Night checklist <span id="log-cal-count2" class="hint"></span></h2></summary>
+    <div id="log-checklist"></div>
+  </details>
+
+  <details class="card" open>
+    <summary><h2>Conditions log</h2></summary>
+    <p class="hint">Add an entry whenever the sky or seeing changes. Each target
+      row shows the entry in force when it started.</p>
+    <div id="log-conditions"></div>
+    <button type="button" class="ghost" id="log-cond-add">Add entry (now)</button>
+  </details>
+
+  <section class="card">
+    <h2>Targets</h2>
+    <div id="log-time" class="stats"></div>
+    <div class="log-scroll"><table id="log-targets" class="data log-table"></table></div>
+    <h3>Unplanned targets</h3>
+    <div class="log-scroll"><table id="log-unplanned" class="data log-table"></table></div>
+    <div class="row">
+      <select id="log-unplanned-pick"></select>
+      <input type="text" id="log-unplanned-name" placeholder="or type a name">
+      <button type="button" id="log-unplanned-add">Add unplanned target</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Observing report</h2>
+    <p class="hint">Writes <code>observing_report_&lt;date&gt;.md</code> and the
+      FFFF-PZ CSV into the plan directory. Gaps are listed as warnings; the
+      report is written anyway.</p>
+    <div class="row">
+      <button type="button" class="primary" id="log-report">Generate report</button>
+      <span id="log-report-status" class="hint"></span>
+    </div>
+    <div id="log-report-warnings"></div>
+    <pre id="log-report-md" class="starlist" hidden></pre>
+  </section>
+</template>
+
+<!-- Full-size finder viewer. Lives outside #view so it survives a route
+     change, and starts hidden until a chart is clicked. -->
+<div id="lightbox" hidden>
+  <button type="button" id="lb-close" aria-label="Close">&times;</button>
+  <button type="button" id="lb-prev" aria-label="Previous">&#8249;</button>
+  <button type="button" id="lb-next" aria-label="Next">&#8250;</button>
+  <figure>
+    <img id="lb-img" alt="">
+    <figcaption id="lb-caption"></figcaption>
+  </figure>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

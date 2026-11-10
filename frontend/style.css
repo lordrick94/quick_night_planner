@@ -1,0 +1,414 @@
+/* night-planner viewer
+   Created by JXP and Claude */
+
+:root {
+  --ink: #16202e;
+  --muted: #64748b;
+  --line: #d9e0ea;
+  --bg: #f6f8fb;
+  --card: #ffffff;
+  --accent: #1d4ed8;
+
+  /* Timeline semantics, reused by the legend so the two can't drift.
+     Okabe-Ito based (T2.1, 2026-11-07); every pair is >= dE2000 12 under
+     normal, protan and deutan vision -- check with
+     scripts/check_palette.py after any change, not by eye. */
+  --science: #0072B2;
+  --mos: #332288;
+  --forced: #D55E00;
+  --partial: #CC79A7;   /* truncated backfill: deliberately unlike
+                           --forced, which the observer asked for */
+  --slew: #009E73;
+  --acq: #88CCEE;       /* acquisition, after the slew */
+  --overhead: #E69F00;  /* standards and focus: orange, per JXP */
+  --idle: #BBBBBB;      /* neutral grey, drawn hatched (.seg.idle-hover) */
+  --blocked: #000000;
+  --twilight: #1e293b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand { font-weight: 700; text-decoration: none; color: var(--ink); font-size: 1.05rem; }
+nav { display: flex; gap: 1rem; }
+nav a { color: var(--muted); text-decoration: none; font-size: 0.92rem; }
+nav a:hover, nav a.active { color: var(--accent); }
+#context { margin-left: auto; color: var(--muted); font-size: 0.88rem; }
+
+main { max-width: 1180px; margin: 0 auto; padding: 1.5rem; }
+h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+h2 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
+.lede { color: var(--muted); margin: 0 0 1.25rem; }
+.hint { color: var(--muted); font-weight: 400; font-size: 0.85rem; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+label { display: block; margin-bottom: 0.9rem; font-weight: 600; font-size: 0.9rem; }
+input, select, button { font: inherit; }
+input[type=text], input[type=date], input[type=number], select {
+  display: block;
+  margin-top: 0.3rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  min-width: 13rem;
+}
+.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.row input[type=text] { margin-top: 0; }
+.grid { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.or { color: var(--muted); font-size: 0.85rem; }
+
+button {
+  padding: 0.5rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover { filter: brightness(1.08); color: #fff; }
+button.ghost { border-style: dashed; color: var(--muted); }
+button[disabled] { opacity: 0.55; cursor: progress; }
+
+table.data { width: 100%; border-collapse: collapse; background: var(--card);
+             border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+table.data th, table.data td { padding: 0.45rem 0.7rem; text-align: left;
+                               border-bottom: 1px solid var(--line); font-size: 0.88rem; }
+table.data th { background: #eef2f7; font-size: 0.78rem; text-transform: uppercase;
+                letter-spacing: 0.03em; color: var(--muted); }
+table.data tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.rejected td { color: var(--muted); }
+.pill { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 999px;
+        font-size: 0.74rem; font-weight: 600; }
+.pill.ok { background: #dcfce7; color: #166534; }
+.pill.no { background: #fee2e2; color: #991b1b; }
+.pill.mos { background: #ede9fe; color: #5b21b6; }
+.pill.forced { background: #fef3c7; color: #92400e; }
+.pill.partial { background: #fce7f3; color: #9d174d; }
+
+/* Timeline */
+#timeline { background: var(--card); border: 1px solid var(--line);
+            border-radius: 8px; padding: 1.25rem 1.25rem 1.6rem; margin-bottom: 0.75rem; }
+.track { position: relative; height: 54px; margin: 1.6rem 0 1.2rem;
+         background: #eef2f7; border-radius: 4px; }
+.seg { position: absolute; top: 0; bottom: 0; border-radius: 3px;
+       overflow: hidden; color: #fff; font-size: 0.7rem; line-height: 54px;
+       padding-left: 0.3rem; white-space: nowrap; }
+.seg.science { background: var(--science); }
+.seg.mos { background: var(--mos); }
+.seg.forced { background: var(--forced); }
+.seg.partial { background: var(--partial); color: #1f1f1f; }
+.seg.slew { background: var(--slew); }
+.seg.acq { background: var(--acq); }
+.seg.overhead { background: var(--overhead); }
+.seg.blocked { background: var(--blocked); }
+.tick { position: absolute; top: -1.45rem; font-size: 0.7rem; color: var(--muted);
+        transform: translateX(-50%); white-space: nowrap; }
+.tick::after { content: ''; position: absolute; left: 50%; top: 1.15rem;
+               width: 1px; height: 0.4rem; background: var(--line); }
+.sunmark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--twilight);
+           opacity: 0.55; }
+.sunmark span { position: absolute; bottom: -1.3rem; left: 2px; font-size: 0.66rem;
+                color: var(--twilight); white-space: nowrap; }
+.legend { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;
+          font-size: 0.8rem; color: var(--muted); }
+.legend i { display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 3px;
+            margin-right: 0.3rem; vertical-align: -1px; }
+
+.stats { display: flex; gap: 1.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.stat b { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 0.8rem; }
+
+.notice { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+          padding: 0.6rem 0.85rem; border-radius: 6px; margin-bottom: 1rem;
+          font-size: 0.87rem; }
+.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+
+.finders { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+           gap: 1rem; }
+.finders figure { margin: 0; background: var(--card); border: 1px solid var(--line);
+                  border-radius: 8px; padding: 0.6rem; }
+.finders img { width: 100%; display: block; border-radius: 4px; }
+.finders figcaption { font-size: 0.82rem; margin-top: 0.4rem; font-weight: 600; }
+
+pre.starlist { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+               padding: 1rem; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; }
+
+#plan-list a { display: block; padding: 0.35rem 0; text-decoration: none; color: var(--accent); }
+#plan-list .none { color: var(--muted); }
+
+/* Hover card for timeline segments */
+.tooltip {
+  position: fixed;
+  display: none;
+  z-index: 50;
+  max-width: 24rem;
+  background: #16202e;
+  color: #f8fafc;
+  border-radius: 7px;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.28);
+  pointer-events: none;   /* never steal the hover from the segment below */
+}
+.tooltip b { display: block; margin-bottom: 0.3rem; font-size: 0.84rem; }
+.tooltip .trow { display: flex; gap: 0.6rem; }
+.tooltip .tkey { color: #94a3b8; min-width: 6.2rem; }
+.tooltip .tval { flex: 1; }
+
+/* Idle stretches carry no fill of their own -- the track shows through --
+   but still need to be hoverable. */
+/* Idle reads as hatched neutral grey: unmistakably "nobody is using this
+   time", without the solid fill that would make it compete with real
+   targets. */
+.seg.idle-hover, .legend i.idle {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(187, 187, 187, 0.55) 0 6px,
+    rgba(187, 187, 187, 0.12) 6px 12px);
+  border: 1px solid rgba(120, 120, 120, 0.55);
+}
+.legend i.idle { background-size: 6px 6px; }
+
+label.check { display: flex; gap: 0.5rem; align-items: flex-start;
+              font-weight: 600; font-size: 0.9rem; margin: 0.9rem 0; }
+label.check input { margin-top: 0.25rem; }
+label.check .hint { display: block; font-weight: 400; margin-top: 0.15rem; }
+
+/* Rescue rows on the rejections page */
+.rescue-row { display: flex; align-items: center; gap: 0.7rem;
+              padding: 0.45rem 0; border-bottom: 1px solid var(--line); }
+.rescue-row:last-child { border-bottom: none; }
+.rescue-row button.ghost { flex: none; margin-left: auto; padding: 0.15rem 0.5rem; }
+.rescue-row input.mins { width: 5.5rem; min-width: 0; margin-top: 0; flex: none; }
+.rescue-label { font-size: 0.86rem; }
+.rescue-label b { margin-right: 0.35rem; }
+.rescue-row.infeasible { opacity: 0.65; }
+.rescue-label .warn { color: #92400e; font-size: 0.79rem; margin-top: 0.15rem; }
+
+#rescue-pick { min-width: 22rem; margin-top: 0; }
+#rescue-mins { width: 6rem; min-width: 0; margin-top: 0; }
+#rescue-chosen:empty { display: none; }
+#rescue-chosen { margin: 0.75rem 0; }
+
+/* Priority rows. Same flex-div shape as the rescue rows rather than a real
+   table: nothing in this app has an editable <table>, and a per-row input is
+   the one thing table.data cannot carry. */
+.prio-row { display: flex; align-items: center; gap: 0.7rem;
+            padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); }
+.prio-row:last-child { border-bottom: none; }
+/* min-width beats the 13rem default on every input, or each row is a column. */
+.prio-row input.prio { width: 4.75rem; min-width: 0; margin-top: 0; flex: none; }
+.prio-label { font-size: 0.86rem; }
+.prio-label b { margin-right: 0.35rem; }
+
+#prio-bulk { width: 6rem; min-width: 0; margin-top: 0; }
+#prio-list { margin-top: 0.75rem; }
+#prio-tiers { margin-left: auto; }
+
+/* Target preview: show the whole table, scrolled rather than silently cut. */
+.preview-scroll { max-height: 22rem; overflow-y: auto; border: 1px solid var(--line);
+                  border-radius: 8px; margin-top: 0.5rem; }
+.preview-scroll table.data { border: none; border-radius: 0; }
+.preview-scroll table.data th { position: sticky; top: 0; z-index: 1; }
+
+/* Slit-angle choice on the finder page: a real fork in what gets drawn,
+   so it reads as a group rather than two loose checkboxes. */
+.slit-mode {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem 0.3rem;
+  margin: 0.6rem 0;
+}
+
+.slit-mode legend {
+  padding: 0 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Finder lightbox: a chart is useless at 260px -- the slit, the offset
+   star and the zoom inset all need the full frame. Clicking a thumbnail
+   opens it as large as the window allows. */
+.finders figure { cursor: zoom-in; transition: border-color 0.12s; }
+.finders figure:hover { border-color: var(--accent); }
+
+#lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 16, 26, 0.88);
+}
+
+#lightbox[hidden] { display: none; }
+
+#lightbox figure {
+  margin: 0;
+  max-width: 94vw;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#lb-img {
+  max-width: 94vw;
+  /* Leave room for the caption so a tall chart is never cropped. */
+  max-height: calc(94vh - 2.4rem);
+  object-fit: contain;
+  background: #fff;
+  border-radius: 6px;
+}
+
+#lb-caption {
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  margin-top: 0.6rem;
+  text-align: center;
+  /* The backdrop is translucent, so the caption needs its own ground to
+     sit on or it reads against whatever thumbnail is behind it. */
+  background: rgba(10, 16, 26, 0.75);
+  padding: 0.25rem 0.8rem;
+  border-radius: 999px;
+}
+
+#lightbox button {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  line-height: 1;
+}
+
+#lightbox button:hover { background: rgba(255, 255, 255, 0.26); }
+
+#lb-close { top: 1rem; right: 1.2rem; width: 2.2rem; height: 2.2rem;
+            font-size: 1.5rem; }
+#lb-prev, #lb-next { top: 50%; transform: translateY(-50%);
+                     width: 2.8rem; height: 2.8rem; font-size: 2rem; }
+#lb-prev { left: 1.2rem; }
+#lb-next { right: 1.2rem; }
+
+@media (max-width: 600px) {
+  #lb-prev, #lb-next { width: 2.2rem; height: 2.2rem; font-size: 1.5rem; }
+}
+
+/* Slit report: which angle each finder was actually drawn at. */
+table.slit-report { border-collapse: collapse; margin-top: 0.6rem;
+                    font-size: 0.82rem; width: 100%; }
+table.slit-report th, table.slit-report td {
+  text-align: left; padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--line); }
+table.slit-report th { color: var(--muted); font-weight: 600; }
+/* A target that did not get what was asked for should catch the eye. */
+table.slit-report tr.fallback td { background: #fff7ed; }
+
+/* Finder generation is slow enough (an image fetch and a catalogue query
+   per chart) that the observer needs to see it moving, not just a
+   disabled button. */
+#fd-progress { display: flex; align-items: center; gap: 0.7rem;
+               margin-top: 0.6rem; }
+#fd-progress[hidden] { display: none; }
+#fd-bar { flex: 0 0 18rem; height: 0.6rem; }
+
+/* Observing log. Used at the telescope on a laptop, so the inputs are full
+   size and nothing depends on hover. */
+details.card > summary { cursor: pointer; list-style: none; }
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary h2 { display: inline; }
+details.card > summary::before { content: '▸ '; color: var(--muted); }
+details.card[open] > summary::before { content: '▾ '; }
+.log-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+            gap: 0 1.25rem; }
+.log-grid label { margin-bottom: 0.6rem; }
+.log-grid input, .log-grid select, .log-grid textarea { width: 100%; min-width: 0; }
+.log-grid label.wide { grid-column: 1 / -1; }
+textarea { font: inherit; display: block; margin-top: 0.3rem; padding: 0.45rem 0.6rem;
+           border: 1px solid var(--line); border-radius: 6px; min-height: 3.2rem; }
+.log-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+            padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
+.log-line:last-child { border-bottom: none; }
+.log-line input[type=text], .log-line select, .log-line input[type=number] {
+  margin-top: 0; min-width: 0; }
+.log-line .ut { width: 5.2rem; }
+.log-line .mid { width: 9rem; }
+.log-line .grow { flex: 1; min-width: 10rem; }
+.log-line.done { background: #f0fdf4; }
+.log-line.gone { opacity: 0.6; }
+.cal-group { font-weight: 600; font-size: 0.86rem; margin: 0.8rem 0 0.2rem;
+             color: var(--muted); }
+.log-scroll { overflow-x: auto; margin-bottom: 0.75rem; }
+table.log-table td { vertical-align: top; }
+table.log-table input[type=text], table.log-table select {
+  margin-top: 0; min-width: 0; width: 100%; padding: 0.3rem 0.4rem; }
+table.log-table td.w-s { min-width: 5.5rem; }
+table.log-table td.w-m { min-width: 8rem; }
+table.log-table td.w-l { min-width: 12rem; }
+table.log-table .planned { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+table.log-table .checks label { display: flex; gap: 0.3rem; font-weight: 400;
+                                font-size: 0.78rem; margin: 0; white-space: nowrap; }
+tr.st-observed td { background: #f0fdf4; }
+tr.st-partial td { background: #fdf2f8; }
+tr.st-not_observed td, tr.st-skipped td { background: #f8fafc; color: var(--muted); }
+tr.st-late td { background: #fffbeb; }
+tr.gone td { opacity: 0.6; }
+.btn-now { padding: 0.25rem 0.5rem; font-size: 0.78rem; }
+.ut-cell { display: flex; gap: 0.3rem; align-items: center; }
+.ut-cell input { width: 4.6rem !important; }
+#log-unplanned-pick { min-width: 18rem; margin-top: 0; }
+#log-unplanned-name { margin-top: 0; }
+
+.req { color: #b91c1c; font-weight: 700; }
+.lst-row { position: relative; height: 1.1rem; margin-top: 3.1rem; }  /* clear the twilight labels */
+.lst-row .tick { top: 0; color: #64748b; }
+.lst-row .tick::after { display: none; }
+.lst-label { font-size: 0.7rem; color: var(--muted); margin-top: 0.2rem; }
+.finders figcaption .btn-now { margin-left: 0.4rem; }
+.finders figure.missing { cursor: default; display: flex; flex-direction: column;
+                          align-items: center; justify-content: center; min-height: 10rem; }
+td.tagcol, th.tagcol { display: none; }
+table.show-tags td.tagcol, table.show-tags th.tagcol { display: table-cell; }
+#assumptions-table th { width: 14rem; text-transform: none; font-size: 0.82rem; }
+#assumptions-table td.notset { color: #b91c1c; font-weight: 700; }
+
+/* Scenario tabs (T4.1) */
+.tabs { display: flex; gap: 0.3rem; border-bottom: 1px solid var(--line); margin-bottom: 0.6rem; }
+.tab { padding: 0.4rem 0.9rem; border: 1px solid var(--line); border-bottom: none;
+       border-radius: 6px 6px 0 0; text-decoration: none; color: var(--muted);
+       background: #eef2f7; font-size: 0.88rem; }
+.tab.active { background: var(--card); color: var(--accent); font-weight: 600; }
+table.compare { margin-bottom: 1rem; }
+table.compare tr.active td { background: #eff6ff; }

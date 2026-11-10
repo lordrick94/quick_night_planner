@@ -1,0 +1,27 @@
+# Paths removed from EVERY commit by the scrub (Created by JXP and Claude).
+# Input for:  git filter-repo --invert-paths --paths-from-file <this file>
+# Also read by scripts/scan_private_targets.py (REMOVED_PREFIXES), so the two
+# always agree. Private copies live in pvt_Nighplans/ (see target_scrub.md).
+# A trailing "/" removes a whole directory.
+
+# Class A -- raw plan data
+Night_plans/
+Keck-2026B-02_test1000/
+claude_prompts/night_plans/
+
+# Class B (D2) -- one-off run scripts, now in pvt_Nighplans/<run>/scripts/
+scripts/check_deadtime_lick_2026b01.py
+scripts/build_lick_2026b02_night2_plan.py
+scripts/build_lick_2026b02_night_plan.py
+scripts/lick_2026b02_extras.py
+scripts/lick_2026b02_finalize_starlists.py
+scripts/lick_2026b02_nonfrb_finders.py
+scripts/lick_2026b02_sep15_revision.py
+scripts/make_lick_2026b02_night2_starlist.py
+scripts/make_lick_2026b02_nonfrb_starlist.py
+scripts/make_lick_2026b02_starlist.py
+scripts/keck_2026oct06_filler_search.py
+scripts/keck_2026oct06_rejection_analysis.py
+scripts/make_keck_2026oct06_targetlist.py
+# Deleted before today but still in history (one-off Keck oct02 run script)
+scripts/keck_2026oct02_calculations.py

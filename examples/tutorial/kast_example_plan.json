@@ -1,0 +1,397 @@
+{
+ "instrument": "kast",
+ "telescope": "Shane 3m (Lick)",
+ "date": "2026-10-20",
+ "timezone": "America/Los_Angeles",
+ "night_start": "19:50",
+ "night_end": "05:54",
+ "night_min": 604.0,
+ "summary": {
+  "n_scheduled": 9,
+  "n_rejected": 3,
+  "on_target_min": 495.2541061333333,
+  "slew_min": 18.0,
+  "acq_min": 27.0,
+  "readout_min": 13.0,
+  "overhead_min": 20.0,
+  "idle_min": 30.745893866666666,
+  "night_min": 604.0,
+  "utilization": 0.8199571293598233
+ },
+ "segments": [
+  {
+   "kind": "overhead",
+   "label": "Focus",
+   "start": 0.0,
+   "end": 10.0
+  },
+  {
+   "kind": "overhead",
+   "label": "Evening standard",
+   "start": 10.0,
+   "end": 20.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB71564",
+   "start": 20.0,
+   "end": 22.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB71564",
+   "start": 22.0,
+   "end": 25.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB71564",
+   "start": 25.0,
+   "end": 87.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB78184",
+   "start": 87.0,
+   "end": 89.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB78184",
+   "start": 89.0,
+   "end": 92.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB78184",
+   "start": 92.0,
+   "end": 154.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB40714",
+   "start": 154.0,
+   "end": 156.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB40714",
+   "start": 156.0,
+   "end": 159.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB40714",
+   "start": 159.0,
+   "end": 200.3
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB56192",
+   "start": 200.3,
+   "end": 202.3
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB56192",
+   "start": 202.3,
+   "end": 205.3
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB56192",
+   "start": 205.3,
+   "end": 246.7
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB61257",
+   "start": 246.7,
+   "end": 248.7
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB61257",
+   "start": 248.7,
+   "end": 251.7
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB61257",
+   "start": 251.7,
+   "end": 293.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB65890",
+   "start": 293.0,
+   "end": 295.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB65890",
+   "start": 295.0,
+   "end": 298.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB65890",
+   "start": 298.0,
+   "end": 360.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB64349",
+   "start": 360.0,
+   "end": 362.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB64349",
+   "start": 362.0,
+   "end": 365.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB64349",
+   "start": 365.0,
+   "end": 458.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB46681",
+   "start": 458.0,
+   "end": 460.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB46681",
+   "start": 460.0,
+   "end": 463.0
+  },
+  {
+   "kind": "science",
+   "label": "SIMFRB46681",
+   "start": 463.0,
+   "end": 508.0
+  },
+  {
+   "kind": "slew",
+   "label": "SIMFRB95645",
+   "start": 508.0,
+   "end": 510.0
+  },
+  {
+   "kind": "acq",
+   "label": "SIMFRB95645",
+   "start": 510.0,
+   "end": 513.0
+  },
+  {
+   "kind": "partial",
+   "label": "SIMFRB95645",
+   "start": 513.0,
+   "end": 573.3
+  },
+  {
+   "kind": "idle",
+   "label": "idle",
+   "start": 573.3,
+   "end": 604.0
+  }
+ ],
+ "schedule": [
+  {
+   "name": "SIMFRB71564",
+   "science": "20:15-21:17",
+   "mode": "longslit",
+   "mag": 17.56,
+   "airmass": null,
+   "exposure": "6 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 60.0,
+   "readout": 2.0,
+   "time_source": "empirical",
+   "etc_min": 60.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 1.0
+  },
+  {
+   "name": "SIMFRB78184",
+   "science": "21:22-22:24",
+   "mode": "longslit",
+   "mag": 18.5,
+   "airmass": null,
+   "exposure": "6 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 60.0,
+   "readout": 2.0,
+   "time_source": "empirical",
+   "etc_min": 60.0,
+   "required": true,
+   "notes": "",
+   "kind": "science",
+   "priority": 1.0
+  },
+  {
+   "name": "SIMFRB40714",
+   "science": "22:29-23:10",
+   "mode": "longslit",
+   "mag": 17.24,
+   "airmass": null,
+   "exposure": "4 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 40.0,
+   "readout": 1.3,
+   "time_source": "empirical",
+   "etc_min": 40.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 1.0
+  },
+  {
+   "name": "SIMFRB56192",
+   "science": "23:15-23:56",
+   "mode": "longslit",
+   "mag": 16.87,
+   "airmass": null,
+   "exposure": "4 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 40.0,
+   "readout": 1.3,
+   "time_source": "empirical",
+   "etc_min": 40.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 1.0
+  },
+  {
+   "name": "SIMFRB61257",
+   "science": "00:01-00:43",
+   "mode": "longslit",
+   "mag": 16.66,
+   "airmass": null,
+   "exposure": "4 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 40.0,
+   "readout": 1.3,
+   "time_source": "empirical",
+   "etc_min": 40.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 2.0
+  },
+  {
+   "name": "SIMFRB65890",
+   "science": "00:48-01:50",
+   "mode": "longslit",
+   "mag": 17.83,
+   "airmass": null,
+   "exposure": "6 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 60.0,
+   "readout": 2.0,
+   "time_source": "empirical",
+   "etc_min": 60.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 2.0
+  },
+  {
+   "name": "SIMFRB64349",
+   "science": "01:55-03:28",
+   "mode": "longslit",
+   "mag": 19.61,
+   "airmass": null,
+   "exposure": "9 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 90.0,
+   "readout": 3.0,
+   "time_source": "empirical",
+   "etc_min": 90.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 2.0
+  },
+  {
+   "name": "SIMFRB46681",
+   "science": "03:33-04:18",
+   "mode": "longslit",
+   "mag": 16.59,
+   "airmass": null,
+   "exposure": "45 min (user)",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 45.0,
+   "readout": 0.0,
+   "time_source": "user",
+   "etc_min": 40.0,
+   "required": false,
+   "notes": "",
+   "kind": "science",
+   "priority": 2.0
+  },
+  {
+   "name": "SIMFRB95645",
+   "science": "04:23-05:23",
+   "mode": "longslit",
+   "mag": 20.03,
+   "airmass": null,
+   "exposure": "9 x 600",
+   "slew": 2.0,
+   "acq": 3.0,
+   "on_target": 60.3,
+   "readout": 0.0,
+   "time_source": "",
+   "etc_min": null,
+   "required": false,
+   "notes": "PARTIAL: 60 of the 90 min this target needs (67%). Scheduled into idle time rather than left out -- expect low S/N, and drop it if you would rather have the gap.",
+   "kind": "partial",
+   "priority": 3.0
+  }
+ ],
+ "rejections": [
+  {
+   "name": "SIMFRB61004",
+   "stage": "3. Scheduling",
+   "reason": "P3 -- required: needs 300 min, no gap that long -- not truncated into a partial (priority P3: needs 300 min, and no idle interval left by the 2 higher-priority tier(s) was long enough inside its HA window)",
+   "priority": 3.0
+  },
+  {
+   "name": "SIMFRB10432",
+   "stage": "3. Scheduling",
+   "reason": "P3 -- priority P3: needs 40 min, and no idle interval left by the 2 higher-priority tier(s) was long enough inside its HA window",
+   "priority": 3.0
+  },
+  {
+   "name": "SIMFRB54531",
+   "stage": "3. Scheduling",
+   "reason": "P3 -- priority P3: needs 90 min, and no idle interval left by the 2 higher-priority tier(s) was long enough inside its HA window",
+   "priority": 3.0
+  }
+ ],
+ "assumptions": {
+  "configuration": "600/4310 / R600/7500 / d57 / 2.0\" / 1x1",
+  "seeing [arcsec]": "1.5",
+  "magnitude band": "r (ETC filter sdss_r.dat); a per-row mag_band column wins",
+  "readout [s per frame]": "20 (blue 20, red 20; arms in parallel)",
+  "readout applies to": "exposure recipes; MOS blocks and forced / partial allocations already include it",
+  "slew [min]": "2",
+  "acquisition [min]": "3",
+  "exposure model": "empirical Kast magnitude rule (--etc empirical): no airmass, seeing, band or S/N dependence"
+ }
+}

@@ -1,0 +1,7 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Project metadata, dependencies, and any console entry points live in setup.cfg
+# (matching the linetools / XAI layout). Keep this file to the build-system only
+# to avoid a [project]-vs-setup.cfg metadata conflict.
