@@ -93,6 +93,15 @@
     </label>
 
     <h3>Blocked windows <span class="hint">optional; ToO, weather hold, engineering</span></h3>
+    <label class="inline" for="block-tz">Times in
+      <select id="block-tz">
+        <option value="local">local time at the telescope</option>
+        <option value="ut">UT</option>
+      </select>
+      <span class="hint">UT times are placed on this night (e.g. 06:30 UT on a Lick
+        November night is 22:30 PST). You can also type a suffix in any time box:
+        <code>06:30UT</code>.</span>
+    </label>
     <div id="blocks"></div>
     <button type="button" class="ghost" id="add-block">+ blocked window</button>
 

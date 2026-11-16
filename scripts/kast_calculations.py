@@ -14,11 +14,13 @@ either instrument the same way.
 Created by JXP and Claude
 """
 
+import math
 import os
 import sys
 from pathlib import Path
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,8 +29,21 @@ sys.path.insert(0, str(_REPO_ROOT / 'scripts'))
 
 from scripts.lick_2026b02_calculations import (
     DEC_LIMIT, HA_MAX, HA_MIN, LICK, PST,
-    find_twilight, ha_at, target_window,
+    calculate_lst, find_twilight, ha_at, target_window,
 )
+
+# How a placed target's start is chosen (2026-11-15). 'airmass' re-times
+# the greedy pass's targets to their lowest summed airmass and inserts
+# dropped targets where moving the others makes room; 'earliest' is the
+# behaviour before that: each target as early as its window allows.
+PLACEMENTS = ('airmass', 'earliest')
+DEFAULT_PLACEMENT = 'airmass'
+
+
+def _lst_hours(when):
+    """Apparent LST at Lick, in hours, at a tz-aware datetime."""
+    from datetime import timezone
+    return calculate_lst(when.astimezone(timezone.utc)).hour
 from night_planner.instrument_params import (DEFAULT_CONFIG, ConfigError,
                                              add_config_args, lick_gap_minutes,
                                              readout_minutes, resolve_options)
@@ -179,8 +194,29 @@ STD_STAR_MINUTES = 10
 MIN_PARTIAL_MINUTES = 10
 
 
+def _clip_to_airmass(ra_deg, dec_deg, entry, exit_, airmass_max):
+    """
+    Shrink an HA window to the part where the airmass is below a ceiling.
+
+    Created by JXP and Claude
+
+    Inside the Shane HA limits a target crosses the meridian at most once,
+    so the minutes below any airmass ceiling form one interval.
+
+    Inputs: ra_deg, dec_deg (float), entry, exit_ (datetimes), airmass_max.
+    Outputs: (entry, exit) datetimes, or None if never below the ceiling.
+    """
+    from night_planner.retime import airmass_on_grid, time_grid
+    times = time_grid(entry, exit_, 1.0)
+    am = airmass_on_grid(ra_deg, dec_deg, times, LICK)
+    ok = np.where(am <= airmass_max)[0]
+    if not len(ok):
+        return None
+    return times[ok[0]], min(times[ok[-1]], exit_)
+
+
 def analyze_targets(targets_csv, date_str, mapping=None, time_overrides=None,
-                    sn_overrides=None):
+                    sn_overrides=None, limits=None):
     """
     Per-target HA window for a Lick night.
 
@@ -204,8 +240,16 @@ def analyze_targets(targets_csv, date_str, mapping=None, time_overrides=None,
         those targets' t_target as if the table had said so.
     sn_overrides : list of "NAME@SN", optional (--set-sn): sets those
         targets' target_sn (S/N per sub-exposure) the same way.
+    limits : dict, optional
+        From night_planner.site_limits.load_site_limits('lick', ...);
+        None = the file's values. An airmass_max (none by default at Lick)
+        shrinks each window to the minutes below it.
     """
+    from night_planner.site_limits import load_site_limits
     from night_planner.targets_io import apply_sn_overrides, apply_time_overrides
+    limits = limits or load_site_limits('lick')
+    dec_max = limits['dec_max'] if limits['dec_max'] is not None else float('inf')
+    dec_min = limits['dec_min']
     df = load_targets(targets_csv, mapping=mapping)
     try:
         df = apply_time_overrides(df, time_overrides)
@@ -226,22 +270,47 @@ def analyze_targets(targets_csv, date_str, mapping=None, time_overrides=None,
             't_target': row.get('t_target', float('nan')),
             'target_sn': row.get('target_sn', float('nan')),
             'required': bool(row.get('required', False)),
+            'schedule_before': row.get('schedule_before', ''),
         }
 
-        if dec_deg > DEC_LIMIT:
+        if dec_deg > dec_max:
             rec.update(observable=False, entry_pst=None, exit_pst=None,
                        ha_entry=None, ha_exit=None, window_min=0,
-                       limit_reason=(f'Dec {dec_deg:+.2f} > +{DEC_LIMIT:.0f}: '
+                       limit_reason=(f'Dec {dec_deg:+.2f} > +{dec_max:.0f}: '
                                       f'above the Shane mechanical limit'))
             rows.append(rec)
             continue
+        if dec_min is not None and dec_deg < dec_min:
+            rec.update(observable=False, entry_pst=None, exit_pst=None,
+                       ha_entry=None, ha_exit=None, window_min=0,
+                       limit_reason=(f'Dec {dec_deg:+.2f} < {dec_min:+.0f}: '
+                                      f'below the southern Dec limit'))
+            rows.append(rec)
+            continue
 
-        window = target_window(ra_hours, dec_deg, twilight)
+        window = target_window(ra_hours, dec_deg, twilight,
+                               ha_min=limits['ha_east'], ha_max=limits['ha_west'],
+                               dec_max=dec_max)
+        if window is not None and limits['airmass_max'] is not None:
+            clipped = _clip_to_airmass(row['ra_deg'], dec_deg, window[0],
+                                       window[1], limits['airmass_max'])
+            if clipped is None:
+                rec.update(observable=False, entry_pst=None, exit_pst=None,
+                           ha_entry=None, ha_exit=None, window_min=0,
+                           limit_reason=(f"never below airmass "
+                                         f"{limits['airmass_max']:g} inside the "
+                                         f"Shane HA window tonight"))
+                rows.append(rec)
+                continue
+            window = (clipped[0], clipped[1],
+                      ha_at(ra_hours, _lst_hours(clipped[0])),
+                      ha_at(ra_hours, _lst_hours(clipped[1])))
         if window is None:
             rec.update(observable=False, entry_pst=None, exit_pst=None,
                        ha_entry=None, ha_exit=None, window_min=0,
-                       limit_reason=(f'never inside the Shane HA window '
-                                      f'({HA_MIN:+.2f}h to {HA_MAX:+.2f}h) '
+                       limit_reason=(f"never inside the Shane HA window "
+                                      f"({limits['ha_east']:+.2f}h to "
+                                      f"{limits['ha_west']:+.2f}h) "
                                       f'during the night'))
         else:
             entry, exit_, ha_entry, ha_exit = window
@@ -356,7 +425,8 @@ def parse_args(argv=None):
     p.add_argument('--start', help='Manual night-start override, HH:MM real '
                                    'local Lick time (PST or PDT by date).')
     p.add_argument('--block', action='append', default=[],
-                   help='Blocked window, "HH:MM-HH:MM[@reason]". Repeatable.')
+                   help='Blocked window, "HH:MM-HH:MM[@reason]", local time; '
+                        'write "HH:MM UT" for UT. Repeatable.')
     p.add_argument('--force', action='append', default=[],
                    help='Force a target in with a truncated exposure, '
                         '"TNS@MINUTES". Repeatable.')
@@ -379,6 +449,21 @@ def parse_args(argv=None):
     p.add_argument('--min-partial', type=float, default=MIN_PARTIAL_MINUTES,
                    help=f'Shortest partial exposure worth scheduling, in '
                         f'minutes (default {MIN_PARTIAL_MINUTES}).')
+    p.add_argument('--placement', choices=PLACEMENTS, default=None,
+                   help='How a target\'s start is chosen once the greedy pass '
+                        'has picked the targets: "airmass" moves them to the '
+                        'lowest summed airmass and inserts dropped targets '
+                        'where that makes room; "earliest" starts each as '
+                        f'early as possible (the old rule) [{DEFAULT_PLACEMENT}].')
+    p.add_argument('--previous-plan',
+                   help='A plan directory (or plan_result.json) whose start '
+                        'times this run should keep unless moving a target '
+                        'clearly lowers its airmass.')
+    p.add_argument('--limit', action='append', default=[],
+                   help='Override a Lick pointing limit for this run, '
+                        '"KEY=VALUE" (keys ha_east, ha_west, dec_max, dec_min, '
+                        'airmass_max; VALUE "none" removes it). Defaults: '
+                        'night_planner/data/site_limits.json. Repeatable.')
     add_config_args(p, 'kast')
     return p.parse_args(argv)
 
@@ -437,7 +522,8 @@ def free_gaps(placements, window_start, window_end, slew_min=SLEW_MINUTES):
 
 
 def backfill_partials(schedule_rows, science_start, night_end, blocks,
-                      min_minutes=MIN_PARTIAL_MINUTES, exposure=None):
+                      min_minutes=MIN_PARTIAL_MINUTES, exposure=None,
+                      before=None):
     """
     Put dropped targets into the leftover gaps, truncated to fit.
 
@@ -468,6 +554,9 @@ def backfill_partials(schedule_rows, science_start, night_end, blocks,
         Blocked windows, which partials must dodge like anything else.
     min_minutes : float
         Shortest partial worth placing.
+    before : dict, optional
+        schedule_before constraints (precedence_map); a partial is only
+        placed where it keeps them.
 
     Outputs
     -------
@@ -527,6 +616,9 @@ def backfill_partials(schedule_rows, science_start, night_end, blocks,
 
             got = (end - start).total_seconds() / 60.0
             if got < min_minutes:
+                continue
+            if before and not precedence_clear(row['TNS'], start, end,
+                                               placed, before):
                 continue
 
             e = (exposure or _EMPIRICAL)(row, start, got)
@@ -659,6 +751,367 @@ def schedule_by_priority(observable, science_start, night_end, blocks,
     return pd.concat(frames, ignore_index=True)
 
 
+def precedence_map(frame):
+    """
+    The schedule_before constraints of a target frame.
+
+    Created by JXP and Claude
+
+    Inputs: frame with 'TNS' and (optionally) 'schedule_before' columns.
+    Outputs: dict name -> set of names it must finish before. Names not in
+    the frame are dropped (a constraint on an absent target is vacuous, as
+    in AstroScheduler).
+    """
+    from night_planner.targets_io import parse_name_list
+    if 'schedule_before' not in frame.columns:
+        return {}
+    names = set(frame['TNS'])
+    out = {}
+    for _, r in frame.iterrows():
+        later = {n for n in parse_name_list(r.get('schedule_before'))
+                 if n in names and n != r['TNS']}
+        if later:
+            out[r['TNS']] = later
+    return out
+
+
+def precedence_clear(name, start, end, placed, before):
+    """
+    Would [start, end) for `name` respect precedence against placed rows?
+
+    Inputs: name (str), start/end (datetime), placed (list of row dicts
+    with TNS/start_pst/end_pst), before (dict from precedence_map).
+    Outputs: bool.
+    """
+    for p in placed:
+        other = p['TNS']
+        if other in before.get(name, ()) and not end <= p['start_pst']:
+            return False
+        if name in before.get(other, ()) and not p['end_pst'] <= start:
+            return False
+    return True
+
+
+def load_previous_starts(path):
+    """
+    Science start of every target in an earlier plan.
+
+    Created by JXP and Claude
+
+    Inputs: path to a plan directory or its plan_result.json.
+    Outputs: dict name -> tz-aware datetime ({} if the plan has none).
+
+    Raises SystemExit if the path holds no plan.
+    """
+    import json
+    from datetime import datetime
+    p = Path(path)
+    if p.is_dir():
+        p = p / 'plan_result.json'
+    if not p.exists():
+        raise SystemExit(f'--previous-plan: no plan_result.json at {p}')
+    with open(p) as f:
+        plan = json.load(f)
+    out = {}
+    for t in plan.get('schedule') or []:
+        when = t.get('science_start') or t.get('start')
+        if t.get('name') and when:
+            out[t['name']] = datetime.fromisoformat(when)
+    return out
+
+
+def partial_note(got, needed):
+    """
+    The skip_reason every partial row carries (the viewer keys on 'PARTIAL').
+
+    Inputs: got, needed (minutes). Outputs: str.
+    """
+    return (f'PARTIAL: {got:.0f} of the {needed:.0f} min this target '
+            f'needs ({got / needed * 100:.0f}%). Scheduled into idle '
+            f'time rather than left out -- expect low S/N, and drop '
+            f'it if you would rather have the gap.')
+
+
+def retime_schedule(sched, science_start, night_end, blocks, exposure=None,
+                    placement=DEFAULT_PLACEMENT, previous=None,
+                    airmass_rule='worst', insert=True, partial_min=None):
+    """
+    Re-time the placed targets, insert dropped ones, enforce precedence.
+
+    Created by JXP and Claude
+
+    The greedy tier pass decides which targets fit, starting each as early
+    as it can. This keeps that set (no placed target is ever dropped, except
+    to satisfy a schedule_before constraint that cannot otherwise hold) and
+    then:
+
+    1. orders the placed targets by start, moved only as far as precedence
+       requires;
+    2. with placement='airmass', picks the start times with the lowest
+       summed block airmass (night_planner.retime.solve_order), plus a
+       charge for moving away from a previous plan's start; with
+       'earliest', the earliest feasible starts (used only to enforce
+       precedence -- otherwise the schedule is returned unchanged);
+    3. with placement='airmass' and insert=True, offers every dropped target,
+       best priority first, the cheapest position where all placed targets
+       still fit (night_planner.retime.insert_target);
+    4. with partial_min set, offers each target still dropped (not
+       required) the longest partial of at least partial_min minutes that
+       fits when the placed targets shift. The goals are thus ranked: full
+       targets, then partial minutes, then airmass -- re-timing never
+       costs a partial that the earliest placement would have allowed
+       purely to gain airmass;
+    5. re-sizes ETC exposures at the new placements (up to 3 rounds),
+       keeping the last placement that fits.
+
+    Inputs
+    ------
+    sched : DataFrame from schedule_by_priority (scheduled and rejected rows)
+    science_start, night_end : datetime
+    blocks : list of (start, end, reason); forced reservations included
+    exposure : callable as in make_kast_exposure, or None (empirical)
+    placement : 'airmass' or 'earliest'
+    previous : dict name -> datetime, optional (load_previous_starts)
+    airmass_rule : 'worst', 'mid' or 'best'; how a block's airmass is taken
+    insert : bool
+    partial_min : float or None
+        Shortest partial worth inserting; None = no partial insertion
+        (backfill_partials still fills idle gaps afterwards).
+
+    Outputs
+    -------
+    DataFrame with the same rows. Moved rows get new start_pst/end_pst;
+    every scheduled row gets 'airmass_block' (block airmass under the rule);
+    inserted rows get a 'placement_note'; rows dropped for precedence get
+    scheduled=False and a skip_reason.
+    """
+    from night_planner import retime as rt
+
+    if placement not in PLACEMENTS:
+        raise ValueError(f'placement must be one of {PLACEMENTS}')
+    if not len(sched) or 'scheduled' not in sched.columns:
+        return sched
+    rows = sched.to_dict('records')
+    before = precedence_map(sched)
+    is_sched = [bool(r.get('scheduled')) and not pd.isna(r.get('start_pst'))
+                for r in rows]
+    if placement == 'earliest' and not before:
+        return _annotate_airmass(sched, airmass_rule)
+
+    times = rt.time_grid(science_start, night_end)
+    n = len(times)
+    step = rt.STEP_MIN
+    t_index = np.arange(n) * step               # minutes after science_start
+    am_cache = {}
+
+    def airmass_of(row):
+        key = row['TNS']
+        if key not in am_cache:
+            am_cache[key] = rt.airmass_on_grid(row['RA_hours'] * 15.0,
+                                               row['Dec_deg'], times, LICK)
+        return am_cache[key]
+
+    def cost_of(row, length):
+        ok = rt.legal_starts(times, length, row['entry_pst'],
+                             min(row['exit_pst'], night_end), blocks)
+        if placement == 'earliest':
+            base = t_index / 1000.0
+        else:
+            base = rt.block_metric(airmass_of(row), length, airmass_rule)
+            prev = (previous or {}).get(row['TNS'])
+            if prev is not None:
+                moved = np.abs(t_index - (prev - science_start).total_seconds() / 60.0)
+                base = base + rt.STABILITY_PER_MIN * moved
+        return np.where(ok, base, np.inf)
+
+    def readout_of(red, blue):
+        return kast_readout(red, blue) or 0.0
+
+    # The sequence: placed targets by greedy start, then precedence.
+    seq = sorted([i for i, s in enumerate(is_sched) if s],
+                 key=lambda i: rows[i]['start_pst'])
+    names = [rows[i]['TNS'] for i in seq]
+    ordered, cycle = rt.precedence_order(names, before)
+    if cycle:
+        print(f'  schedule_before has a cycle among {", ".join(cycle)}; '
+              f'those constraints are ignored')
+        before = {a: {b for b in v if not (a in cycle and b in cycle)}
+                  for a, v in before.items()}
+    by_name = {rows[i]['TNS']: i for i in seq}
+    seq = [by_name[nm] for nm in ordered]
+
+    lengths = {i: float(rows[i]['duration_min']) for i in seq}
+    starts, _ = rt.solve_order([cost_of(rows[i], lengths[i]) for i in seq],
+                               [lengths[i] for i in seq], SLEW_MINUTES)
+    # Precedence can make the greedy set impossible: drop the latest-
+    # placed successor of a constraint and try again.
+    while starts is None and seq:
+        pairs = [(a, b) for a in names for b in before.get(a, ()) if b in names]
+        if not pairs:
+            print('  re-timing found no placement for the greedy set on the '
+                  f'{step:g}-min grid; keeping the greedy starts')
+            return _annotate_airmass(sched, airmass_rule)
+        drop = max((b for _, b in pairs), key=lambda b: rows[by_name[b]]['start_pst'])
+        pred = next(a for a, b in pairs if b == drop)
+        i = by_name[drop]
+        rows[i].update(scheduled=False, start_pst=pd.NaT, end_pst=pd.NaT,
+                       skip_reason=(f'schedule_before: must start after {pred} '
+                                    f'ends, and no slot after it fits'))
+        seq.remove(i)
+        names.remove(drop)
+        starts, _ = rt.solve_order([cost_of(rows[j], lengths[j]) for j in seq],
+                                   [lengths[j] for j in seq], SLEW_MINUTES)
+
+    inserted = set()
+    if placement == 'airmass' and insert and starts is not None:
+        dropped = [i for i, r in enumerate(rows)
+                   if not r.get('scheduled') and r.get('observable')
+                   and not pd.isna(r.get('entry_pst'))
+                   and not pd.isna(r.get('exit_pst'))]
+        dropped.sort(key=lambda i: (rows[i].get('priority', 1.0), rows[i]['exit_pst']))
+        for i in dropped:
+            row = rows[i]
+            e = (exposure or _EMPIRICAL)(row)
+            length = e['dur_s'] / 60.0 + readout_of(e['red'], e['blue'])
+            pos, new_starts, _ = rt.insert_target(
+                [cost_of(rows[j], lengths[j]) for j in seq],
+                [lengths[j] for j in seq], [rows[j]['TNS'] for j in seq],
+                cost_of(row, length), length, row['TNS'], SLEW_MINUTES, before)
+            if pos is None:
+                continue
+            extra = {k: v for k, v in e.items() if k not in ('red', 'blue', 'dur_s')}
+            row.update(scheduled=True, duration_min=length, red_side=e['red'],
+                       blue_side=e['blue'], readout_min=readout_of(e['red'], e['blue']),
+                       skip_reason='', **extra)
+            seq.insert(pos, i)
+            lengths[i] = length
+            starts = new_starts
+            inserted.add(i)
+            print(f"  Inserted {row['TNS']} (P{row.get('priority', 1.0):g}) by "
+                  f"re-timing the placed targets")
+
+        # Partials that need the placed targets to shift. Feasibility is
+        # monotone in length, so bisect for the longest one.
+        partial_rows = set()
+        for i in dropped if partial_min else []:
+            row = rows[i]
+            if row.get('scheduled') or row.get('required'):
+                continue
+            need = (exposure or _EMPIRICAL)(row)['dur_s'] / 60.0
+            window = (min(row['exit_pst'], night_end)
+                      - max(row['entry_pst'], science_start)).total_seconds() / 60.0
+            lo, hi, best = float(partial_min), min(need, window), None
+            others = ([cost_of(rows[j], lengths[j]) for j in seq],
+                      [lengths[j] for j in seq], [rows[j]['TNS'] for j in seq])
+
+            def attempt(length):
+                return rt.insert_target(*others, cost_of(row, length), length,
+                                        row['TNS'], SLEW_MINUTES, before)
+
+            if hi < lo:
+                continue
+            trial = attempt(hi)
+            if trial[0] is not None:
+                best = (hi, trial)
+            else:
+                trial = attempt(lo)
+                if trial[0] is None:
+                    continue
+                best = (lo, trial)
+                while hi - lo > 1.0:
+                    mid = (lo + hi) / 2.0
+                    trial = attempt(mid)
+                    if trial[0] is not None:
+                        lo, best = mid, (mid, trial)
+                    else:
+                        hi = mid
+            got, (pos, new_starts, _) = best
+            got = math.floor(got / rt.STEP_MIN) * rt.STEP_MIN
+            pos, new_starts, _ = attempt(got)
+            if pos is None:
+                continue
+            seq.insert(pos, i)
+            lengths[i] = got
+            starts = new_starts
+            partial_rows.add(i)
+            row.update(scheduled=True, duration_min=got, readout_min=0.0,
+                       skip_reason=partial_note(got, need))
+            print(f"  Partial {row['TNS']}: {got:.0f} of {need:.0f} min, by "
+                  f"re-timing the placed targets")
+    else:
+        partial_rows = set()
+
+    # Re-size ETC exposures at the new placements; keep the last fit.
+    # Partials are allocations: their length stays, only the recipe follows.
+    for _ in range(3 if exposure is not None else 0):
+        new = {}
+        for i, s in zip(seq, starts):
+            r = rows[i]
+            if i in partial_rows:
+                new[i] = (None, lengths[i])
+                continue
+            sci = lengths[i] - float(r.get('readout_min') or 0.0)
+            e = exposure(r, times[s], sci)
+            new[i] = (e, e['dur_s'] / 60.0 + readout_of(e['red'], e['blue']))
+        if all(abs(new[i][1] - lengths[i]) <= 0.5 for i in seq):
+            break
+        trial = {i: new[i][1] for i in seq}
+        s2, _ = rt.solve_order([cost_of(rows[i], trial[i]) for i in seq],
+                               [trial[i] for i in seq], SLEW_MINUTES)
+        if s2 is None:
+            break
+        for i in seq:
+            e, length = new[i]
+            if e is None:
+                continue
+            extra = {k: v for k, v in e.items() if k not in ('red', 'blue', 'dur_s')}
+            rows[i].update(red_side=e['red'], blue_side=e['blue'], duration_min=length,
+                           readout_min=readout_of(e['red'], e['blue']), **extra)
+            lengths[i] = length
+        starts = s2
+
+    for i, s in zip(seq, starts or []):
+        r = rows[i]
+        r['start_pst'] = times[s]
+        r['end_pst'] = advance(times[s], lengths[i])
+        r['duration_min'] = lengths[i]
+        if i in partial_rows:
+            # The recipe for the time actually given, as backfill_partials does.
+            e = (exposure or _EMPIRICAL)(r, times[s], lengths[i])
+            extra = {k: v for k, v in e.items() if k not in ('red', 'blue', 'dur_s')}
+            r.update(red_side=e['red'], blue_side=e['blue'], **extra)
+            r['placement_note'] = ('partial inserted by re-timing the placed '
+                                   'targets')
+        if i in inserted:
+            r['placement_note'] = ('inserted after the greedy pass: it fits once '
+                                   'the placed targets are re-timed')
+    out = pd.DataFrame(rows)
+    if 'placement_note' not in out.columns:
+        out['placement_note'] = ''
+    out['placement_note'] = out['placement_note'].fillna('')
+    return _annotate_airmass(out, airmass_rule)
+
+
+def _annotate_airmass(sched, rule='worst'):
+    """
+    Add 'airmass_block': each scheduled row's airmass over its block.
+
+    Inputs: schedule DataFrame; rule ('worst', 'mid', 'best').
+    Outputs: the DataFrame with the column added (NaN for unscheduled rows).
+    """
+    from night_planner.sky import block_airmass
+    vals = []
+    for _, r in sched.iterrows():
+        if r.get('scheduled') and not pd.isna(r.get('start_pst')):
+            vals.append(block_airmass(r['RA_hours'] * 15.0, r['Dec_deg'],
+                                      r['start_pst'], r['end_pst'], rule, LICK))
+        else:
+            vals.append(np.nan)
+    sched = sched.copy()
+    sched['airmass_block'] = vals
+    return sched
+
+
 def run(args):
     """Execute the pipeline for an already-parsed args namespace."""
     cfg = load_config(args.config) if args.config else None
@@ -685,11 +1138,25 @@ def run(args):
         tns, _, minutes = spec.partition('@')
         forced.append((tns, float(minutes)))
 
+    from night_planner.site_limits import (describe_limits, load_site_limits,
+                                           parse_limit_overrides)
+    try:
+        limits = load_site_limits('lick', parse_limit_overrides(
+            getattr(args, 'limit', None) or []))
+    except (KeyError, ValueError) as err:
+        raise SystemExit(f'error: {err}')
+    placement = getattr(args, 'placement', None) or DEFAULT_PLACEMENT
+    previous = (load_previous_starts(args.previous_plan)
+                if getattr(args, 'previous_plan', None) else None)
+
     os.makedirs(output_dir, exist_ok=True)
 
     results_df, twilight = analyze_targets(
         targets_csv, date, time_overrides=getattr(args, 'set_time', None),
-        sn_overrides=getattr(args, 'set_sn', None))
+        sn_overrides=getattr(args, 'set_sn', None), limits=limits)
+    print(f'Pointing limits: {describe_limits(limits)}')
+    print(f'Placement: {placement}'
+          + (f' (keeping starts from {args.previous_plan})' if previous else ''))
     night_start = start_override or twilight['evening_pst']
     night_end = twilight['morning_pst']
     if night_start >= night_end:
@@ -735,12 +1202,22 @@ def run(args):
 
     sched = schedule_by_priority(observable, science_start, night_end,
                                   list(blocks) + reservations, exposure=exposure)
+    # Re-time / insert / precedence (2026-11-15). Partials come after, so
+    # they fill the gaps of the final placement.
+    sched = retime_schedule(sched, science_start, night_end,
+                            list(blocks) + reservations, exposure=exposure,
+                            placement=placement, previous=previous,
+                            airmass_rule=etc_opts.get('airmass_rule') or 'worst',
+                            partial_min=(None if getattr(args, 'no_partials', False)
+                                         else getattr(args, 'min_partial',
+                                                      MIN_PARTIAL_MINUTES)))
+    before = precedence_map(results_df)
     if not getattr(args, 'no_partials', False):
         sched = backfill_partials(sched, science_start, night_end,
                                    list(blocks) + reservations,
                                    min_minutes=getattr(args, 'min_partial',
                                                        MIN_PARTIAL_MINUTES),
-                                   exposure=exposure)
+                                   exposure=exposure, before=before)
     if forced_rows:
         sched = pd.concat([sched, pd.DataFrame(forced_rows)], ignore_index=True)
 
@@ -805,6 +1282,9 @@ def run(args):
         'mag_band': etc_opts['mag_band'],
         'etc_opts': {k: etc_opts[k] for k in ('etc', 'target_sn', 'n_sub_min',
                                               'airmass_rule')},
+        'limits': limits,
+        'placement': placement,
+        'previous_plan': getattr(args, 'previous_plan', None),
     }
 
 

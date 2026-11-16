@@ -165,7 +165,12 @@ def starlist_row(name, coord, comment='', style='keck'):
       Hamilton format takes no keywords, and the schedule annotations
       live in the target list rather than the starlist.
       (mthamilton.ucolick.org/techdocs/telescopes/starlistFormat.html)
+
+    Whitespace in a name becomes '_' in both dialects.
     """
+    # Starlists are split on whitespace, so a name like 'BPM 46714' would
+    # shift every field after it; spaces become underscores.
+    name = '_'.join(str(name).split())
     ra = coord.ra.to_string(unit=u.hour, sep=' ', precision=2, pad=True)
     dec = coord.dec.to_string(sep=' ', precision=1, pad=True,
                                alwayssign=(style == 'keck'))

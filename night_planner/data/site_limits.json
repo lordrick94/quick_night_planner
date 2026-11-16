@@ -1,0 +1,18 @@
+{
+  "_comment": "Created by JXP and Claude. Pointing limits per site, read by night_planner.site_limits. Hour angles in hours (east negative), angles in degrees; null means no limit. A run can override any value with --limit KEY=VALUE. Only the Lick/Kast pipeline reads this file so far.",
+  "lick": {
+    "telescope": "Shane 3m",
+    "ha_east": -5.666666666666667,
+    "ha_west": 3.75,
+    "dec_max": 82.0,
+    "dec_min": null,
+    "airmass_max": null,
+    "_sources": {
+      "ha_east": "Lick control system, -05:40; adopted by the author 2026-10-14",
+      "ha_west": "Lick control system, +03:45",
+      "dec_max": "Shane mechanical limit as used since the first Lick runs; UCSC AstroScheduler v1.3.0 uses +72 (unresolved, see context/claudes_brain.md v0.57)",
+      "dec_min": "no southern limit has been applied",
+      "airmass_max": "none at Lick: the window is set by the HA limits alone (AstroScheduler uses 1.7)"
+    }
+  }
+}

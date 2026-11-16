@@ -1782,7 +1782,8 @@ def parse_args(argv=None):
                    'later.')
     p.add_argument('--block', action='append', default=[],
                    help='Blocked-out window, "HH:MM-HH:MM" or '
-                   '"HH:MM-HH:MM@reason". Repeatable.')
+                   '"HH:MM-HH:MM@reason", local time; write "HH:MM UT" '
+                   'for UT. Repeatable.')
     p.add_argument('--set-time', action='append', default=[],
                    help='Set a target\'s time on target, "TNS@MINUTES", as if '
                         'the table\'s t_target said so; it is then scheduled '

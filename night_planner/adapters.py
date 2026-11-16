@@ -385,8 +385,11 @@ def lick_kast(out):
                 exposure_blue=str(r.get('blue_side', '')),
                 window_start=_dt(r.get('entry_pst')),
                 window_end=_dt(r.get('exit_pst')),
-                notes=str(r.get('skip_reason') or ''),
+                notes=str(r.get('skip_reason') or _s(r.get('placement_note')) or ''),
+                airmass_block=_f(r.get('airmass_block')),
             ))
+            am_block = _f(r.get('airmass_block'))
+            note = _s(r.get('placement_note'))
             decisions.append(TargetDecision(
                 name=name, ra_deg=ra_deg, dec_deg=dec_deg, mag=mag,
                 status='scheduled', stage='3. Scheduling',
@@ -394,7 +397,9 @@ def lick_kast(out):
                 reason=_with_priority(
                     r.get('priority'),
                     f"{start:%H:%M}-{end:%H:%M} "
-                    f"({_f(r.get('duration_min'), 0):.0f} min)")))
+                    f"({_f(r.get('duration_min'), 0):.0f} min"
+                    + (f", airmass {am_block:.2f}" if am_block else '') + ')'
+                    + (f' -- {note}' if note else ''))))
         else:
             decisions.append(TargetDecision(
                 name=name, ra_deg=ra_deg, dec_deg=dec_deg, mag=mag,
@@ -449,6 +454,24 @@ def lick_kast(out):
     _attribute_kast_slews(schedule, overheads[-1][1] if overheads
                           else out['start_local'])
 
+    assumptions = plan_assumptions('kast', out.get('config'),
+                                   out.get('seeing'), out.get('mag_band'),
+                                   out.get('etc_opts'))
+    # Recorded since 2026-11-15, so a plan says which limits and which
+    # placement rule produced it.
+    if out.get('limits'):
+        from .site_limits import describe_limits
+        assumptions['pointing limits'] = describe_limits(out['limits'])
+    if out.get('placement'):
+        assumptions['placement'] = {
+            'airmass': 'lowest summed block airmass for the targets the greedy '
+                       'pass picked; dropped targets inserted where re-timing '
+                       'makes room',
+            'earliest': 'each target as early as its window allows',
+        }.get(out['placement'], out['placement'])
+        if out.get('previous_plan'):
+            assumptions['placement'] += f" (starts kept from {out['previous_plan']})"
+
     return PlanResult(
         instrument='kast',
         telescope=site['telescope'],
@@ -462,9 +485,7 @@ def lick_kast(out):
         decisions=decisions,
         blocks=list(out['blocks']),
         overheads=overheads,
-        assumptions=plan_assumptions('kast', out.get('config'),
-                                     out.get('seeing'), out.get('mag_band'),
-                                     out.get('etc_opts')),
+        assumptions=assumptions,
         config=_plan_config(out),
     )
 

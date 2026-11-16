@@ -30,8 +30,9 @@ Created by JXP and Claude
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -77,6 +78,38 @@ def save_config(config: NightPlanConfig, path):
         json.dump(asdict(config), f, indent=2)
 
 
+# 'HH:MM UT' (also 'UTC' or 'Z', any case, space optional): a time given in
+# UT rather than at the telescope (2026-11-11).
+_UT_TIME = re.compile(r'^\s*(\d{1,2}):(\d{2})\s*(?:UTC?|Z)\s*$', re.IGNORECASE)
+
+
+def resolve_ut_time(date_str, hour, minute, tz):
+    """
+    A UT clock time on a night, as a local datetime.
+
+    The night runs from local noon on its evening date to local noon the
+    next day, and the UT time is the one instant in that span with that UT
+    clock reading -- so '06:30 UT' on a Lick November night is 22:30 PST
+    that evening, and on a Keck night 20:30 HST.
+
+    Parameters
+    ----------
+    date_str : str, the night's evening date 'YYYY-MM-DD'
+    hour, minute : int, UT clock time
+    tz : tzinfo, the observatory zone
+
+    Returns
+    -------
+    datetime (tz-aware, in tz)
+    """
+    noon = datetime.strptime(date_str, '%Y-%m-%d').replace(hour=12, tzinfo=tz)
+    noon_utc = noon.astimezone(timezone.utc)
+    when = noon_utc.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if when < noon_utc:
+        when += timedelta(days=1)
+    return when.astimezone(tz)
+
+
 def resolve_local_dt(date_str, time_spec, tz):
     """
     Resolve a manual-entry time into a tz-aware local datetime.
@@ -86,17 +119,25 @@ def resolve_local_dt(date_str, time_spec, tz):
     date_str : str
         The night's evening date, 'YYYY-MM-DD'.
     time_spec : str
-        Either 'HH:MM' (rolled to the next calendar day if hour < 12,
-        the same post-midnight convention used throughout this repo's
-        twilight/window searches) or a full ISO datetime
-        ('YYYY-MM-DDTHH:MM'), used as-is.
+        One of:
+        - 'HH:MM' local time (rolled to the next calendar day if hour < 12,
+          the same post-midnight convention used throughout this repo's
+          twilight/window searches);
+        - 'HH:MM UT' (or 'HH:MMUT', 'UTC', 'Z'): UT, placed on this night
+          by resolve_ut_time();
+        - a full ISO datetime ('YYYY-MM-DDTHH:MM', optionally with an
+          offset or 'Z'), used as-is.
     tz : tzinfo
         Timezone to attach (DST-aware for Lick, fixed for Keck).
 
     Returns
     -------
-    datetime (tz-aware)
+    datetime (tz-aware, in tz for the HH:MM forms)
     """
+    ut = _UT_TIME.match(time_spec)
+    if ut:
+        return resolve_ut_time(date_str, int(ut.group(1)), int(ut.group(2)), tz)
+
     if 'T' in time_spec:
         dt = datetime.fromisoformat(time_spec)
         if dt.tzinfo is None:

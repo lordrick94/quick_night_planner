@@ -392,7 +392,10 @@ tr.gone td { opacity: 0.6; }
 #log-unplanned-name { margin-top: 0; }
 
 .req { color: #b91c1c; font-weight: 700; }
-.lst-row { position: relative; height: 1.1rem; margin-top: 3.1rem; }  /* clear the twilight labels */
+.ut-row { position: relative; height: 1.1rem; margin-top: 3.1rem; }  /* clear the twilight labels */
+.ut-row .tick { top: 0; color: #0e7490; }
+.ut-row .tick::after { display: none; }
+.lst-row { position: relative; height: 1.1rem; margin-top: 0.15rem; }
 .lst-row .tick { top: 0; color: #64748b; }
 .lst-row .tick::after { display: none; }
 .lst-label { font-size: 0.7rem; color: var(--muted); margin-top: 0.2rem; }

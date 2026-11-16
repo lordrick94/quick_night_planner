@@ -104,6 +104,10 @@ class ScheduledTarget:
     # fixed recipe, the empirical Kast rule).
     target_sn: Optional[float] = None
     target_sn_own: bool = False
+    # Airmass over the scheduled science span under the plan's airmass rule
+    # (2026-11-15), whatever set the exposure -- unlike `airmass`, which is
+    # only the ETC's input. None on plans written before it existed.
+    airmass_block: Optional[float] = None
 
     def to_dict(self):
         d = asdict(self)

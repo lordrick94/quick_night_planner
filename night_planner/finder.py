@@ -50,6 +50,14 @@ STAR_RING_ARCSEC = 4.0
 # on a full-field chart, so the chart gets a zoomed inset as well.
 ZOOM_SEP_ARCSEC = 12.0
 
+# Image and catalogue services, tried in order (2026-11-10: CDS's hips2fits
+# stopped answering from Lick-run machines while STScI kept working, and a
+# single service left every chart blank). A dead service is given
+# SERVICE_TIMEOUT_S before the next one is tried.
+SERVICE_TIMEOUT_S = 12
+PS1_SCALE_ARCSEC = 0.25          # Pan-STARRS cutout pixel scale
+PS1_MIN_DEC = -30.0              # Pan-STARRS 3pi survey limit
+
 
 def load_secondaries(targets_csv):
     """
@@ -110,71 +118,288 @@ def load_secondaries(targets_csv):
     return out
 
 
-def fetch_image(coord, fov_arcmin=DEFAULT_FOV_ARCMIN, pixels=600,
-                 survey='CDS/P/PanSTARRS/DR1/r'):
+def _hips2fits_image(coord, fov_arcmin, pixels, survey='CDS/P/PanSTARRS/DR1/r'):
     """
-    Grab an image cutout around a position.
+    Cutout from CDS hips2fits.
+
+    Inputs: coord (SkyCoord), fov_arcmin (float), pixels (int), survey (HiPS id).
+    Outputs: (data, wcs).
+    """
+    from astroquery.hips2fits import conf, hips2fits
+
+    with conf.set_temp('timeout', SERVICE_TIMEOUT_S):
+        result = hips2fits.query(
+            hips=survey, width=pixels, height=pixels,
+            ra=coord.ra, dec=coord.dec, fov=fov_arcmin * u.arcmin,
+            projection='TAN', format='fits')
+    return result[0].data, WCS(result[0].header)
+
+
+def _ps1_image(coord, fov_arcmin, band='r'):
+    """
+    Pan-STARRS1 stacked cutout from STScI (Dec > -30).
+
+    Inputs: coord (SkyCoord), fov_arcmin (float), band (str).
+    Outputs: (data, wcs).
+    """
+    import io
+
+    import requests
+    from astropy.io import fits
+    from astropy.table import Table
+
+    if coord.dec.deg < PS1_MIN_DEC:
+        raise ValueError(f'Dec {coord.dec.deg:.1f} is south of Pan-STARRS')
+    ra, dec = coord.ra.deg, coord.dec.deg
+    listing = requests.get('https://ps1images.stsci.edu/cgi-bin/ps1filenames.py',
+                           params={'ra': ra, 'dec': dec, 'filters': band},
+                           timeout=SERVICE_TIMEOUT_S)
+    listing.raise_for_status()
+    files = Table.read(listing.text, format='ascii')
+    if not len(files):
+        raise ValueError('no Pan-STARRS image covers this position')
+    size = int(round(fov_arcmin * 60 / PS1_SCALE_ARCSEC))
+    cut = requests.get('https://ps1images.stsci.edu/cgi-bin/fitscut.cgi',
+                       params={'ra': ra, 'dec': dec, 'size': size,
+                               'format': 'fits', 'red': files['filename'][0]},
+                       timeout=4 * SERVICE_TIMEOUT_S)
+    cut.raise_for_status()
+    with fits.open(io.BytesIO(cut.content)) as hdul:
+        return hdul[0].data.astype(float), WCS(hdul[0].header)
+
+
+def _dss_image(coord, fov_arcmin):
+    """
+    DSS2 red cutout from STScI (all sky).
+
+    Inputs: coord (SkyCoord), fov_arcmin (float).
+    Outputs: (data, wcs).
+    """
+    import io
+
+    import requests
+    from astropy.io import fits
+
+    resp = requests.get('https://archive.stsci.edu/cgi-bin/dss_search',
+                        params={'v': 'poss2ukstu_red', 'r': coord.ra.deg,
+                                'd': coord.dec.deg, 'e': 'J2000',
+                                'h': fov_arcmin, 'w': fov_arcmin, 'f': 'fits'},
+                        timeout=4 * SERVICE_TIMEOUT_S)
+    resp.raise_for_status()
+    with fits.open(io.BytesIO(resp.content)) as hdul:
+        return hdul[0].data.astype(float), WCS(hdul[0].header)
+
+
+# (label shown on the chart, fetcher(coord, fov_arcmin, pixels))
+IMAGE_SOURCES = (
+    ('Pan-STARRS r (CDS hips2fits)',
+     lambda c, fov, px: _hips2fits_image(c, fov, px)),
+    ('Pan-STARRS r (STScI)', lambda c, fov, px: _ps1_image(c, fov)),
+    ('DSS2 red (STScI)', lambda c, fov, px: _dss_image(c, fov)),
+)
+
+
+def fetch_image(coord, fov_arcmin=DEFAULT_FOV_ARCMIN, pixels=600, sources=None):
+    """
+    Grab an image cutout around a position, trying each service in turn.
 
     Parameters
     ----------
     coord : SkyCoord
     fov_arcmin : float
     pixels : int
-    survey : str
-        HiPS identifier. Pan-STARRS r covers Dec > -30; DSS2 is the
-        all-sky fallback.
+        Output size for services that resample (hips2fits).
+    sources : sequence of (label, fetcher), optional
+        Default IMAGE_SOURCES: CDS hips2fits Pan-STARRS, STScI Pan-STARRS,
+        STScI DSS2 (the all-sky fallback).
 
     Returns
     -------
-    (data, wcs)
-    """
-    from astroquery.hips2fits import hips2fits
+    (data, wcs, label) : the first service that answered, and its name.
 
-    result = hips2fits.query(
-        hips=survey, width=pixels, height=pixels,
-        ra=coord.ra, dec=coord.dec, fov=fov_arcmin * u.arcmin,
-        projection='TAN', format='fits')
-    return result[0].data, WCS(result[0].header)
+    Raises
+    ------
+    RuntimeError listing every service's failure when none answered.
+    """
+    failures = []
+    for label, fetch in (sources or IMAGE_SOURCES):
+        try:
+            data, wcs = fetch(coord, fov_arcmin, pixels)
+            if data is None or not np.isfinite(data).any():
+                raise ValueError('empty image')
+            return data, wcs, label
+        except Exception as err:
+            failures.append(f'{label}: {type(err).__name__}: {str(err)[:120]}')
+    raise RuntimeError('no image service answered -- ' + ' | '.join(failures))
+
+
+def _vizier_gaia(server):
+    """
+    A Gaia DR3 cone search on one VizieR server.
+
+    Inputs: server (str hostname).
+    Outputs: callable(coord, radius_arcsec, min_mag, max_mag) ->
+        (ra_deg, dec_deg, gmag) numpy arrays.
+    """
+    def query(coord, radius_arcsec, min_mag, max_mag):
+        from astroquery.vizier import Vizier
+
+        vizier = Vizier(columns=['RA_ICRS', 'DE_ICRS', 'Gmag'],
+                        column_filters={'Gmag': f'>{min_mag} && <{max_mag}'},
+                        vizier_server=server, timeout=SERVICE_TIMEOUT_S)
+        vizier.ROW_LIMIT = 200
+        tables = vizier.query_region(coord, radius=radius_arcsec * u.arcsec,
+                                      catalog='I/355/gaiadr3')
+        if not tables:
+            return np.array([]), np.array([]), np.array([])
+        t = tables[0]
+        return (np.asarray(t['RA_ICRS'], float), np.asarray(t['DE_ICRS'], float),
+                np.asarray(t['Gmag'], float))
+    return query
+
+
+def _esa_gaia(coord, radius_arcsec, min_mag, max_mag):
+    """
+    A Gaia DR3 cone search on the ESA Gaia archive (TAP, synchronous).
+
+    Inputs: coord (SkyCoord), radius_arcsec, min_mag, max_mag (float).
+    Outputs: (ra_deg, dec_deg, gmag) numpy arrays.
+    """
+    import requests
+    from astropy.table import Table
+
+    # The magnitude cut is applied here, not in the ADQL: on the archive it
+    # defeats the positional index (2.6 s -> 50 s for a 100" cone).
+    adql = (f'SELECT TOP 5000 ra, dec, phot_g_mean_mag FROM gaiadr3.gaia_source '
+            f'WHERE 1=CONTAINS(POINT(ra, dec), CIRCLE({coord.ra.deg:.7f}, '
+            f'{coord.dec.deg:.7f}, {radius_arcsec / 3600.0:.7f}))')
+    resp = requests.post('https://gea.esac.esa.int/tap-server/tap/sync',
+                         data={'REQUEST': 'doQuery', 'LANG': 'ADQL',
+                               'FORMAT': 'csv', 'QUERY': adql},
+                         timeout=2 * SERVICE_TIMEOUT_S)
+    resp.raise_for_status()
+    t = Table.read(resp.text, format='ascii.csv')
+    if not len(t):
+        return np.array([]), np.array([]), np.array([])
+    g = np.asarray(np.ma.filled(t['phot_g_mean_mag'], np.nan), float)
+    keep = (g > min_mag) & (g < max_mag)
+    return (np.asarray(t['ra'], float)[keep], np.asarray(t['dec'], float)[keep],
+            g[keep])
+
+
+def _mast_ps1_stars(coord, radius_arcsec, min_mag, max_mag):
+    """
+    Point sources from the Pan-STARRS1 DR2 mean catalogue at MAST (Dec > -30).
+
+    Point-like means rPSF - rKron < 0.05 mag (the PS1 star/galaxy rule of
+    thumb: a galaxy's PSF magnitude is fainter than its Kron magnitude;
+    stars scatter slightly negative); an offset star must not be a galaxy.
+
+    Inputs: coord (SkyCoord), radius_arcsec, min_mag, max_mag (float, r band).
+    Outputs: (ra_deg, dec_deg, rmag) numpy arrays.
+    """
+    import requests
+    from astropy.table import Table
+
+    if coord.dec.deg < PS1_MIN_DEC:
+        raise ValueError(f'Dec {coord.dec.deg:.1f} is south of Pan-STARRS')
+    resp = requests.get(
+        'https://catalogs.mast.stsci.edu/api/v0.1/panstarrs/dr2/mean.csv',
+        params={'ra': coord.ra.deg, 'dec': coord.dec.deg,
+                'radius': radius_arcsec / 3600.0, 'nDetections.gte': 5,
+                'columns': '[raMean,decMean,rMeanPSFMag,rMeanKronMag]'},
+        timeout=2 * SERVICE_TIMEOUT_S)
+    resp.raise_for_status()
+    t = Table.read(resp.text, format='ascii.csv')
+    if not len(t):
+        return np.array([]), np.array([]), np.array([])
+    psf = np.asarray(t['rMeanPSFMag'], float)
+    kron = np.asarray(t['rMeanKronMag'], float)
+    keep = ((psf > min_mag) & (psf < max_mag) & (kron > 0)
+            & (psf - kron < 0.05))
+    return (np.asarray(t['raMean'], float)[keep],
+            np.asarray(t['decMean'], float)[keep], psf[keep])
+
+
+# (label, band of the magnitude, query), tried in order. The CfA VizieR
+# mirror is deliberately absent: on 2026-11-10 it served Gaia DR3 as a
+# malformed table that astroquery reads as "no stars" -- a silent failure,
+# worse than an error -- while CDS gave 404 and ESA was intermittent (503,
+# timeouts). Pan-STARRS at MAST (STScI) is the backstop.
+GAIA_SOURCES = (
+    ('Gaia DR3 (VizieR CDS)', 'G', _vizier_gaia('vizier.cds.unistra.fr')),
+    ('Gaia DR3 (ESA archive)', 'G', _esa_gaia),
+    ('Pan-STARRS1 DR2 (MAST)', 'r', _mast_ps1_stars),
+)
+
+
+def gaia_stars(coord, radius_arcsec, min_mag, max_mag, sources=None):
+    """
+    Gaia DR3 stars in a cone, from the first catalogue service that answers.
+
+    Parameters
+    ----------
+    coord : SkyCoord
+    radius_arcsec, min_mag, max_mag : float
+    sources : sequence of (label, band, query), optional; default GAIA_SOURCES
+
+    Returns
+    -------
+    (ra_deg, dec_deg, mag, label, band)
+
+    Raises
+    ------
+    RuntimeError listing every service's failure when none answered.
+    """
+    failures = []
+    for label, band, query in (sources or GAIA_SOURCES):
+        try:
+            ra, dec, mag = query(coord, radius_arcsec, min_mag, max_mag)
+            return ra, dec, mag, label, band
+        except Exception as err:
+            failures.append(f'{label}: {type(err).__name__}: {str(err)[:100]}')
+    raise RuntimeError('no star catalogue answered -- ' + ' | '.join(failures))
 
 
 def find_offset_star(coord, max_sep_arcsec=OFFSET_MAX_SEP_ARCSEC,
                       min_mag=OFFSET_MIN_MAG, max_mag=OFFSET_MAX_MAG):
     """
-    Nearest usable offset star from Gaia DR3.
+    Nearest usable offset star: Gaia DR3, or Pan-STARRS1 when no Gaia
+    service answers.
 
     Returns
     -------
     dict with 'coord', 'mag', 'sep_arcsec', 'offset_ra', 'offset_dec'
     (offsets run star -> target, in arcsec, matching the starlist
-    convention), or None if nothing suitable is in range.
+    convention), 'catalog' (which service answered) and 'band' (of
+    'mag': G for Gaia, r for Pan-STARRS), or None if
+    nothing suitable is in range.
+
+    Raises
+    ------
+    RuntimeError when no catalogue service answered (so a caller can tell
+    "no star" from "no catalogue").
     """
-    from astroquery.vizier import Vizier
-
-    vizier = Vizier(columns=['RA_ICRS', 'DE_ICRS', 'Gmag'],
-                    column_filters={'Gmag': f'>{min_mag} && <{max_mag}'})
-    vizier.ROW_LIMIT = 200
-    tables = vizier.query_region(coord, radius=max_sep_arcsec * u.arcsec,
-                                  catalog='I/355/gaiadr3')
-    if not tables:
+    ra, dec, gmag, label, band = gaia_stars(coord, max_sep_arcsec, min_mag, max_mag)
+    if not len(ra):
         return None
-
-    table = tables[0]
-    stars = SkyCoord(table['RA_ICRS'], table['DE_ICRS'], unit='deg')
+    stars = SkyCoord(ra, dec, unit='deg')
     seps = coord.separation(stars).arcsec
 
     # Nearest first: a short offset is easier to trust than a bright one.
-    order = np.argsort(seps)
-    for i in order:
+    for i in np.argsort(seps):
         if seps[i] < 1.0:        # that's the target itself
             continue
         star = stars[i]
         d_ra, d_dec = star.spherical_offsets_to(coord)
         return {
             'coord': star,
-            'mag': float(table['Gmag'][i]),
+            'mag': float(gmag[i]),
             'sep_arcsec': float(seps[i]),
             'offset_ra': float(d_ra.arcsec),
             'offset_dec': float(d_dec.arcsec),
+            'catalog': label,
+            'band': band,
         }
     return None
 
@@ -214,7 +439,8 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
                  fov_arcmin=DEFAULT_FOV_ARCMIN,
                  slit_length_arcmin=DEFAULT_SLIT_LENGTH_ARCMIN,
                  slit_width_arcsec=DEFAULT_SLIT_WIDTH_ARCSEC,
-                 subtitle='', slit_note='', rotator_note=''):
+                 subtitle='', slit_note='', rotator_note='', image_label='',
+                 tub=None, slit_centre=None):
     """
     Render the finder chart: image, target, secondary candidate, offset
     star, slit.
@@ -229,6 +455,15 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
         How this angle was chosen, printed with it in the caption.
     rotator_note : str, optional
         What to set at the telescope, when that is not the sky PA.
+    image_label : str, optional
+        The image's source, printed on the chart (fetched here when data is
+        None, which also sets it).
+    tub : dict, optional
+        lick_tub.tub_settings() output; with it, the PA box on the image
+        also gives the Cass tub readout.
+    slit_centre : SkyCoord, optional
+        Where the slit is centred; default the target. A slit through both
+        candidates is centred midway between them (the starlist's _C row).
     secondary : dict, optional
         Second-ranked host candidate, as load_secondaries() returns it.
         Labelled on the chart rather than only ringed: at the eyepiece the
@@ -246,7 +481,7 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
     from astropy.visualization.wcsaxes import SphericalCircle
 
     if data is None:
-        data, wcs = fetch_image(coord, fov_arcmin)
+        data, wcs, image_label = fetch_image(coord, fov_arcmin)
 
     vmin, vmax = ZScaleInterval().get_limits(np.nan_to_num(data))
 
@@ -302,7 +537,7 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
     if offset_star is not None:
         star = offset_star['coord']
         ring(ax, star, STAR_RING_ARCSEC, 'tab:cyan',
-             f"offset star G={offset_star['mag']:.1f}")
+             f"offset star {offset_star.get('band', 'G')}={offset_star['mag']:.1f}")
 
     # A close pair is only a few pixels apart at full field, so show it
     # again at a scale that separates it. Which of two neighbouring
@@ -348,13 +583,18 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
         except Exception as err:          # cutout off the image edge
             print(f'{name}: no zoom inset ({type(err).__name__}: {err})')
 
-    # The slit: a rectangle centred on the target, long axis at slit_pa
-    # measured east of north.
+    # The slit: a rectangle centred on slit_centre (default the target),
+    # long axis at slit_pa measured east of north.
+    centre = coord if slit_centre is None else slit_centre
     half = (slit_length_arcmin / 2) * u.arcmin
     width = (slit_width_arcsec / 2) * u.arcsec
     pa = slit_pa * u.deg
-    ends = [coord.directional_offset_by(pa, half),
-            coord.directional_offset_by(pa + 180 * u.deg, half)]
+    ends = [centre.directional_offset_by(pa, half),
+            centre.directional_offset_by(pa + 180 * u.deg, half)]
+    if slit_centre is not None:
+        ax.plot(centre.ra.deg, centre.dec.deg, marker='+', ms=12, mew=1.5,
+                color='tab:purple', transform=ax.get_transform('world'),
+                label='slit centre (_C)')
     corners = []
     for end, sign in ((ends[0], 1), (ends[1], -1)):
         for perp in (pa + 90 * u.deg, pa - 90 * u.deg)[::sign]:
@@ -362,6 +602,16 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
     corners.append(corners[0])
     ax.plot([c.ra.deg for c in corners], [c.dec.deg for c in corners],
             transform=ax.get_transform('world'), color='tab:purple', lw=1.3)
+
+    # The two numbers set at the telescope, where the eye lands first.
+    box = f'PA = {slit_pa:.1f}\N{DEGREE SIGN}'
+    if tub:
+        box += (f"\nTUB = {tub['tub']:.2f}"
+                f"\n(or {tub['alt_tub']:.2f} at PA {tub['alt_pa']:.1f}\N{DEGREE SIGN})")
+    ax.text(0.02, 0.98, box, transform=ax.transAxes, ha='left', va='top',
+            fontsize=12, fontweight='bold', color='tab:purple',
+            bbox={'boxstyle': 'round', 'facecolor': 'white', 'alpha': 0.85,
+                  'edgecolor': 'tab:purple'})
 
     ax.set_xlabel('RA (J2000)')
     ax.set_ylabel('Dec (J2000)')
@@ -386,7 +636,17 @@ def draw_finder(coord, name, out_path, slit_pa, data=None, wcs=None,
                     f"{offset_star['offset_ra']:+.2f}\", "
                     f"{offset_star['offset_dec']:+.2f}\" "
                     f"({offset_star['sep_arcsec']:.1f}\" away)")
-    fig.text(0.5, 0.02, caption, ha='center', fontsize=8.5, color='0.25')
+        if slit_centre is not None:
+            d_ra, d_dec = offset_star['coord'].spherical_offsets_to(slit_centre)
+            caption += (f'; -> slit centre _C: {d_ra.arcsec:+.2f}", '
+                        f'{d_dec.arcsec:+.2f}"')
+    if image_label:
+        caption += f'\nimage: {image_label}'
+    # Anchored below the axes (not at a fixed figure height), so a longer
+    # caption never runs into the RA axis label; savefig's tight bbox
+    # grows the figure to fit it.
+    ax.text(0.5, -0.09, caption, transform=ax.transAxes, ha='center',
+            va='top', fontsize=8.5, color='0.25')
 
     out_path = Path(out_path)
     fig.savefig(out_path, dpi=130, bbox_inches='tight')
@@ -500,8 +760,12 @@ def generate_for_plan(plan, location, out_dir, targets=None,
             # joining them, and the dispersion penalty is whatever it is.
             slit_pa = float(coord.position_angle(secondary['coord']).deg) % 180
 
+        # requested_mode is what the observer asked for when this chart was
+        # drawn. Kept so a report merged across runs (one card re-rendered
+        # later) can still tell "fell back" from "drawn at parallactic on
+        # purpose in an earlier run".
         entry = {'name': target.name, 'slit_pa': slit_pa,
-                 'slit_mode': mode,
+                 'slit_mode': mode, 'requested_mode': slit_mode,
                  'parallactic_pa': pa['mean_pa'],
                  'pa_vs_parallactic': float(
                      abs((slit_pa - pa['mean_pa'] + 90) % 180 - 90)),
@@ -532,10 +796,20 @@ def generate_for_plan(plan, location, out_dir, targets=None,
                     coord.separation(secondary['coord']).arcsec),
             })
 
+        # A slit through both candidates is centred midway between them, so
+        # a pair wider than half the slit still fits (the starlist's _C).
+        centre = None
+        if mode == 'candidates':
+            sec = secondary['coord']
+            centre = coord.directional_offset_by(coord.position_angle(sec),
+                                                 coord.separation(sec) / 2)
+            entry.update({'slit_centre_ra': float(centre.ra.deg),
+                          'slit_centre_dec': float(centre.dec.deg)})
+
         try:
             star = find_offset_star(coord)
         except Exception as err:               # catalogue unreachable
-            star, entry['offset_star_error'] = None, str(err)[:200]
+            star, entry['offset_star_error'] = None, str(err)[:600]
 
         if star is not None:
             entry.update({
@@ -545,7 +819,13 @@ def generate_for_plan(plan, location, out_dir, targets=None,
                 'offset_star_offset': star['sep_arcsec'],
                 'offset_ra': star['offset_ra'],
                 'offset_dec': star['offset_dec'],
+                'offset_star_catalog': star.get('catalog'),
+                'offset_star_band': star.get('band', 'G'),
             })
+            if centre is not None:
+                d_ra, d_dec = star['coord'].spherical_offsets_to(centre)
+                entry.update({'offset_ra_centre': float(d_ra.arcsec),
+                              'offset_dec_centre': float(d_dec.arcsec)})
 
         try:
             # Every chart shows the longslit at parallactic, mask targets
@@ -567,7 +847,11 @@ def generate_for_plan(plan, location, out_dir, targets=None,
                     note += ', no secondary to align on'
             subtitle = (f"{target.science_start:%H:%M}-{target.end:%H:%M} · "
                         f"{how}{mask_note}")
-            draw_finder(coord, target.name, png, slit_pa,
+            data, wcs, image_label = fetch_image(coord, fov_arcmin)
+            entry['image_source'] = image_label
+            draw_finder(coord, target.name, png, slit_pa, data=data, wcs=wcs,
+                        image_label=image_label, tub=entry.get('cass_tub'),
+                        slit_centre=centre,
                         offset_star=star, secondary=secondary,
                         fov_arcmin=fov_arcmin,
                         slit_length_arcmin=slit_length_arcmin,
@@ -576,7 +860,7 @@ def generate_for_plan(plan, location, out_dir, targets=None,
                         rotator_note=_tub_note(entry.get('cass_tub')))
             entry['png'] = str(png)
         except Exception as err:               # image service unreachable
-            entry['error'] = f'{type(err).__name__}: {str(err)[:200]}'
+            entry['error'] = f'{type(err).__name__}: {str(err)[:600]}'
 
         with open(sidecar, 'w') as f:
             json.dump(entry, f, indent=2)
@@ -628,9 +912,13 @@ def slit_report(results, slit_mode):
         }
         rows.append(row)
 
+        # Judge each chart against what was asked for when *it* was drawn;
+        # sidecars written before requested_mode existed fall back to this
+        # run's request, which was the old behaviour.
+        requested = entry.get('requested_mode') or slit_mode
         if row['slit_pa'] is None:
             lines.append(f"{entry['name']}: unchanged ({entry.get('skipped')})")
-        elif slit_mode == 'candidates' and mode != 'candidates':
+        elif requested == 'candidates' and mode != 'candidates':
             fell_back.append(entry['name'])
             lines.append(f"{entry['name']}: parallactic "
                          f"{row['slit_pa']:.2f} deg -- {row['reason']}")
@@ -645,3 +933,70 @@ def slit_report(results, slit_mode):
 
     return {'requested': slit_mode, 'rows': rows, 'fell_back': fell_back,
             'lines': lines}
+
+
+def plan_slit_entries(plan, out_dir, fresh):
+    """
+    Every scheduled target's finder entry: this run's where it drew one,
+    otherwise what the chart already on disk records.
+
+    Created by JXP and Claude
+
+    Re-rendering one card used to rewrite slit_report.txt with that card
+    alone, erasing the record of every other chart's angle. Merging with
+    the sidecars keeps the file a whole-night record.
+
+    Inputs
+    ------
+    plan : PlanResult
+    out_dir : str or Path
+        The plan's finders/ directory.
+    fresh : list of dict
+        What generate_for_plan() returned for this run.
+
+    Outputs
+    -------
+    list of dict in schedule order, ready for slit_report(). Targets never
+    drawn (no sidecar) are left out; a sidecar that recorded a failure is
+    kept, so the failure stays on the record.
+    """
+    out_dir = Path(out_dir)
+    by_name = {e['name']: e for e in fresh}
+    merged = []
+    for target in plan.schedule:
+        if target.name in by_name:
+            merged.append(by_name[target.name])
+            continue
+        sidecar = out_dir / f'{target.name}_finder.json'
+        old = _read_sidecar(sidecar) if sidecar.exists() else {}
+        if not old:
+            continue
+        old = dict(old, name=target.name)
+        if not old.get('error'):
+            old['skipped'] = 'drawn earlier'
+        merged.append(old)
+    return merged
+
+
+def write_slit_report(finder_dir, plan, report):
+    """
+    Save the slit report beside the charts.
+
+    Written to disk as well as returned because it is the record of what
+    angle each chart was drawn at, and that question comes up again days
+    later when a spectrum looks wrong.
+
+    Inputs: finder_dir (str/Path), plan (PlanResult), report (slit_report()).
+    Outputs: none; writes <finder_dir>/slit_report.txt.
+    """
+    path = Path(finder_dir) / 'slit_report.txt'
+    header = [f'Slit angles for {plan.date} ({Path(plan.output_dir).name})',
+              f'Requested: {report["requested"]}',
+              'Created by JXP and Claude -- night-planner', '']
+    if report['fell_back']:
+        header += [f'Fell back to parallactic (not from FFFF-PZ): '
+                   f'{", ".join(report["fell_back"])}', '']
+    try:
+        path.write_text('\n'.join(header + report['lines']) + '\n')
+    except OSError:
+        pass        # the report is a convenience; never fail a render for it

@@ -63,9 +63,14 @@ PST = ZoneInfo('America/Los_Angeles')
 # two differ. The east limit was -5.0 here until 2026-10-14, when the
 # author adopted the published -05:40 -- worth 40 minutes of extra
 # window on every target that rises into the night.
-HA_MIN = -(5 + 40 / 60)      # -05:40
-HA_MAX = 3 + 45 / 60         # +03:45
-DEC_LIMIT = 82.0
+# Since 2026-11-15 the values are read from night_planner/data/
+# site_limits.json (with their sources); these names stay as the
+# defaults every existing caller already imports.
+from night_planner.site_limits import load_site_limits as _load_site_limits  # noqa: E402
+_LICK_LIMITS = _load_site_limits('lick')
+HA_MIN = _LICK_LIMITS['ha_east']     # -05:40
+HA_MAX = _LICK_LIMITS['ha_west']     # +03:45
+DEC_LIMIT = _LICK_LIMITS['dec_max']  # +82
 
 SLEW_MINUTES = 5
 FOCUS_MINUTES = 5
@@ -164,15 +169,23 @@ def time_at_lst(lst_target_hours, lst_ref_hours, time_ref):
     return advance(time_ref, dt_hours * 60.0)
 
 
-def target_window(ra_hours, dec_deg, twilight):
+def target_window(ra_hours, dec_deg, twilight, ha_min=None, ha_max=None,
+                  dec_max=None):
     """Compute the [entry, exit] PST window during which a target satisfies
     -05:40 <= HA <= +03:45, clipped to the twilight-bounded night.
 
     Returns None if the target never satisfies the HA window during the
     night (e.g. Dec > 82, or the night ends before HA reaches -5h, or HA
     passes +3.75 before the night starts).
+
+    ha_min, ha_max, dec_max : float, optional
+        Per-run limits (night_planner.site_limits); None = the module
+        defaults read from site_limits.json. dec_max may also be passed as
+        float('inf') to skip the check.
     """
-    if dec_deg > DEC_LIMIT:
+    HA_MIN_ = HA_MIN if ha_min is None else ha_min
+    HA_MAX_ = HA_MAX if ha_max is None else ha_max
+    if dec_deg > (DEC_LIMIT if dec_max is None else dec_max):
         return None
 
     eve_lst = twilight['evening_lst'].hour
@@ -193,8 +206,8 @@ def target_window(ra_hours, dec_deg, twilight):
     # at most one copy can overlap; the widest is simply the safe pick.
     best = None
     for k in (-1, 0, 1):
-        entry = max(ha_eve, HA_MIN + 24 * k)
-        exit_ = min(ha_morn, HA_MAX + 24 * k)
+        entry = max(ha_eve, HA_MIN_ + 24 * k)
+        exit_ = min(ha_morn, HA_MAX_ + 24 * k)
         if entry < exit_ and (best is None or exit_ - entry > best[1] - best[0]):
             best = (entry, exit_, k)
     if best is None:

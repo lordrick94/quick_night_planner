@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import zipfile
 from datetime import timedelta
 from pathlib import Path
@@ -846,7 +847,8 @@ def generate_finders(req: FinderRequest):
     both candidates means they set an angle they did not choose.
     """
     from night_planner.adapters import SITES
-    from night_planner.finder import generate_for_plan, slit_report
+    from night_planner.finder import (generate_for_plan, plan_slit_entries,
+                                      slit_report)
 
     base = _safe_dir(req.output_dir)
     plan = _require_plan(req.output_dir)
@@ -868,6 +870,16 @@ def generate_finders(req: FinderRequest):
 
     key = str(finder_dir)
 
+    # Sync endpoints run in a thread pool, so a second click (or a per-card
+    # button pressed during a full run) would draw into the same folder at
+    # the same time and fight over the progress entry and the report.
+    with _FINDER_LOCK:
+        if key in _FINDER_RUNNING:
+            raise HTTPException(
+                409, 'finder charts are already being generated for this '
+                     'plan -- wait for that run to finish')
+        _FINDER_RUNNING.add(key)
+
     def note(done, total, name):
         _FINDER_PROGRESS[key] = {'done': done, 'total': total,
                                  'current': name,
@@ -884,9 +896,20 @@ def generate_finders(req: FinderRequest):
     finally:
         # A crash must not leave the viewer polling a bar that never ends.
         _FINDER_PROGRESS.pop(key, None)
+        with _FINDER_LOCK:
+            _FINDER_RUNNING.discard(key)
 
     report = slit_report(results, req.slit_mode)
-    _write_slit_report(finder_dir, plan, report)
+    if req.targets:
+        # One card re-rendered: the file stays a whole-night record (the
+        # response still carries just this run, which the viewer merges).
+        whole = slit_report(plan_slit_entries(plan, finder_dir, results),
+                            req.slit_mode)
+        whole['requested'] = (f"{req.slit_mode} for {', '.join(req.targets)}; "
+                              'other charts as drawn earlier')
+        _write_slit_report(finder_dir, plan, whole)
+    else:
+        _write_slit_report(finder_dir, plan, report)
     return {'mode': req.slit_mode, 'finder_dir': str(finder_dir),
             'fell_back': report['fell_back'], 'report': report,
             'results': results}
@@ -899,6 +922,10 @@ def generate_finders(req: FinderRequest):
 # and the poll below is served while it works.
 _FINDER_PROGRESS = {}
 
+# Finders dirs with a generation in flight; one run per plan at a time.
+_FINDER_RUNNING = set()
+_FINDER_LOCK = threading.Lock()
+
 
 @app.get('/api/finders/progress')
 def finders_progress(output_dir: str):
@@ -908,24 +935,9 @@ def finders_progress(output_dir: str):
 
 
 def _write_slit_report(finder_dir, plan, report):
-    """
-    Save the slit report beside the charts.
-
-    Written to disk as well as returned because it is the record of what
-    angle each chart was drawn at, and that question comes up again days
-    later when a spectrum looks wrong.
-    """
-    path = Path(finder_dir) / 'slit_report.txt'
-    header = [f'Slit angles for {plan.date} ({Path(plan.output_dir).name})',
-              f'Requested: {report["requested"]}',
-              'Created by JXP and Claude -- night-planner', '']
-    if report['fell_back']:
-        header += [f'Fell back to parallactic (not from FFFF-PZ): '
-                   f'{", ".join(report["fell_back"])}', '']
-    try:
-        path.write_text('\n'.join(header + report['lines']) + '\n')
-    except OSError:
-        pass        # the report is a convenience; never fail a render for it
+    """Save the slit report beside the charts (night_planner.finder)."""
+    from night_planner.finder import write_slit_report
+    write_slit_report(finder_dir, plan, report)
 
 
 class StarlistRequest(BaseModel):

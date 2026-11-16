@@ -119,6 +119,41 @@ rejection above — it is *not* allowed to move `A`, `B` or `C`.
 
 ---
 
+## After the tier loop: re-timing, insertion, precedence (2026-11-15)
+
+Borrowed from the UCSC AstroScheduler comparison (Night Planner Decision
+Map artifact). `kast_calculations.retime_schedule()` runs between the tier
+loop and the partial backfill, using `night_planner/retime.py`.
+
+- **Placement by airmass** (`--placement airmass`, the default). The tier
+  loop still decides *which* targets fit. Their start times are then
+  re-chosen, in the same order, to minimise the summed block airmass
+  (`--airmass-rule` over each block). This is an exact dynamic program on a
+  0.5-minute grid, with no search cap. `--placement earliest` restores the
+  old starts exactly.
+- **Insertion.** Each target the loop dropped is offered, best priority
+  first, the cheapest position where every placed target still fits inside
+  its window. Placed targets may move but are never dropped, so priority
+  still means a lower tier cannot displace a higher one. Targets still out
+  are then offered the longest partial (at least `--min-partial`) that fits
+  when the others shift. The goals rank as: full targets, then partial
+  minutes, then airmass.
+- **Stability** (`--previous-plan DIR`). Each minute a target moves away
+  from its start in that plan costs 0.002 airmass, so a re-run keeps the
+  night unless moving clearly helps.
+- **Precedence** (`schedule_before` column, names separated by `;` or `,`).
+  The target must finish before the named ones start. The sequence is
+  ordered to respect it. If no placement exists, the later target is
+  rejected with a `schedule_before:` reason. Partials keep it too.
+- **Limits as data.** Shane HA, Dec and airmass limits are read from
+  `night_planner/data/site_limits.json`, each with its source.
+  `--limit KEY=VALUE` overrides one for a run (e.g. `--limit dec_max=72
+  --limit airmass_max=1.7`). The plan's assumptions record the limits and
+  the placement rule used.
+
+Only the Lick/Kast path does this so far; Keck/LRIS still places by window
+open.
+
 ## What outranks priority
 
 | Mechanism | Beats priority because |

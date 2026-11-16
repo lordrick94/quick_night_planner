@@ -32,7 +32,7 @@ from astropy import units as u
 
 REQUIRED_FIELDS = ('name', 'ra', 'dec', 'mag')
 OPTIONAL_FIELDS = ('pox', 'tags', 'dm', 'priority', 'mag_band', 't_target',
-                   'required', 'target_sn')
+                   'required', 'target_sn', 'schedule_before')
 
 # Priority convention, shared with the UCSC AstroScheduler so the two stay
 # comparable: a float, lower = more important. Every target defaults to the
@@ -74,7 +74,31 @@ ALIASES = {
     # plan-wide --target-sn. Bare 'snr'/'sn' are deliberately not aliases:
     # tables use them for a *measured* S/N.
     'target_sn': ['target_sn', 'sn_target', 'snr_target', 'target_snr'],
+    # Precedence (2026-11-15, borrowed from the UCSC AstroScheduler): names
+    # of targets this one must finish before, separated by ';' or ','.
+    'schedule_before': ['schedule_before', 'precedes'],
 }
+
+
+def parse_name_list(value):
+    """
+    A `schedule_before` cell as a list of target names.
+
+    Created by JXP and Claude
+
+    Inputs: value (str, list, NaN or None); names separated by ';' or ','.
+    Outputs: list of str, stripped, empty entries dropped, order kept.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        if isinstance(value, float) and np.isnan(value):
+            return []
+        items = str(value).replace(',', ';').split(';')
+    return [str(v).strip() for v in items if str(v).strip()
+            and str(v).strip().lower() != 'nan']
 
 _TRUE = {'true', 'yes', 'y', '1', 't'}
 _FALSE = {'false', 'no', 'n', '0', 'f', ''}
@@ -378,6 +402,11 @@ def load_targets(source, mapping=None):
     out['target_sn'] = (df[source_col].map(parse_t_target).map(
         lambda v: np.nan if v is None else v).astype(float)
         if source_col else np.nan)
+    # Kept as one ';'-joined string so it survives a CSV round trip;
+    # parse_name_list() turns it back into names.
+    source_col = mapping.columns.get('schedule_before')
+    out['schedule_before'] = (df[source_col].map(
+        lambda v: ';'.join(parse_name_list(v))) if source_col else '')
 
     # Priority is handled apart from the loop above because it is the one
     # optional field the scheduler *computes with*: every consumer may assume

@@ -17,8 +17,9 @@ Both follow what `chime_ffff_pz_starlist` emits for those observatories.
 
 Slit centre: chime_ffff_pz derives Lick's `_C` from
 `center_lick_kast_slits()`, which fits the slit through the two best host
-candidates. These plans put the slit at the parallactic angle on a single
-target instead, so the slit centre *is* the target.
+candidates. A parallactic chart puts the slit on a single target, so its
+centre *is* the target; a 'candidates' chart (slit through both PATH
+candidates) puts `_C` midway between them, on the slit.
 
 Created by JXP and Claude
 """
@@ -74,9 +75,10 @@ def _lick_block(target, coord, finder, has_star):
     would not act on it either way, and leaving it bare invites the next
     reader to think it would.
 
-    exptime and the PA note go on both the target row and the `_C`
-    slit-centre row, since either can be the row actually selected when
-    the exposure is set up.
+    exptime, the PA and the tub note go on both the target row and the
+    `_C` slit-centre row, since either can be the row actually selected
+    when the exposure is set up. For a 'candidates' slit, `_C` is the
+    midpoint of the two candidates.
 
     The target row's comment also carries the Cassegrain tub readout when
     the finder computed one. The tub, not the sky PA, is what is set at
@@ -101,11 +103,40 @@ def _lick_block(target, coord, finder, has_star):
         lines.append(
             starlist_row(f'{target.name}_S', star, style='lick')
             + f"#RA_OFFSET = {finder['offset_ra']:.2f} and "
-              f"DECOFFSET = {finder['offset_dec']:.2f}")
+              f"DECOFFSET = {finder['offset_dec']:.2f}"
+            + (f" (to _C: {finder['offset_ra_centre']:.2f}, "
+               f"{finder['offset_dec_centre']:.2f})"
+               if finder.get('offset_ra_centre') is not None else ''))
 
-    # Parallactic slit on one target, so its centre is the target itself.
-    lines.append(starlist_row(f'{target.name}_C', coord, style='lick') + setup)
+    centre = slit_centre(coord, finder)
+    lines.append(starlist_row(f'{target.name}_C', centre, style='lick')
+                 + setup + tub_note)
     return lines
+
+
+def slit_centre(coord, finder):
+    """
+    Where the slit is centred.
+
+    Inputs
+    ------
+    coord : SkyCoord, the target (primary)
+    finder : dict, the target's finder sidecar
+
+    Outputs
+    -------
+    SkyCoord : the midpoint of the two candidates for a 'candidates' slit
+    (both then sit on the slit, either side of its centre), else the target.
+    """
+    if finder.get('slit_centre_ra') is not None:
+        return SkyCoord(ra=finder['slit_centre_ra'] * u.deg,
+                        dec=finder['slit_centre_dec'] * u.deg)
+    if finder.get('slit_mode') != 'candidates' or finder.get('secondary_ra') is None:
+        return coord
+    sec = SkyCoord(ra=finder['secondary_ra'] * u.deg,
+                   dec=finder['secondary_dec'] * u.deg)
+    return coord.directional_offset_by(coord.position_angle(sec),
+                                       coord.separation(sec) / 2)
 
 
 def build_starlist(plan, include_standards=True, location=None,
@@ -139,7 +170,8 @@ def build_starlist(plan, include_standards=True, location=None,
     ]
     if style == 'lick':
         lines.append(f'{comment} rows per target: target, _S offset star, '
-                     f'_C slit centre (parallactic slit, centred on target)')
+                     f'_C slit centre (the target for a parallactic slit; '
+                     f'midway between the two candidates for a slit through both)')
         lines.append(f'{comment} exptime = total integration (s). Everything '
                      f'after a # is a note, not a keyword:')
         lines.append(f'{comment}   PA = slit position angle on the sky; '

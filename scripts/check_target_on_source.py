@@ -30,7 +30,7 @@ from astropy.stats import sigma_clipped_stats
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from night_planner.finder import fetch_image  # noqa: E402
+from night_planner.finder import _hips2fits_image  # noqa: E402
 
 
 def detect_sources(data, wcs, fwhm=3.0, threshold_sigma=5.0):
@@ -94,8 +94,9 @@ def check(positions, fov_arcmin=2.0, survey='CDS/P/PanSTARRS/DR1/r'):
     list of dict
     """
     centre = positions[0][1]
-    data, wcs = fetch_image(centre, fov_arcmin=fov_arcmin, pixels=600,
-                             survey=survey)
+    # hips2fits specifically: the pixel scale below assumes its resampling
+    # to 600 px, and the survey is chosen by the caller.
+    data, wcs = _hips2fits_image(centre, fov_arcmin, 600, survey=survey)
     pixel_scale = fov_arcmin * 60.0 / 600.0
 
     sources, peaks = detect_sources(data, wcs)

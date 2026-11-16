@@ -172,6 +172,15 @@ function addRow(container, fields) {
   container.append(row);
 }
 
+/* 'HH:MM' -> 'HH:MM UT', leaving a time that already says UT/UTC/Z alone. */
+function asUT(time) {
+  const t = String(time).trim();
+  return /(ut|utc|z)$/i.test(t) ? t : `${t} UT`;
+}
+
+/* UT clock time of an ISO instant (any offset). */
+const utClock = (iso) => (iso ? new Date(iso).toISOString().slice(11, 16) : '—');
+
 function collectRows(container) {
   return [...container.querySelectorAll('.row')].map((row) => {
     const out = {};
@@ -277,10 +286,23 @@ async function renderSetup(params) {
     name: sc.name, seeing: sc.seeing, start: sc.start,
     bstart: sc.blocks?.[0]?.start, bend: sc.blocks?.[0]?.end }));
 
-  $('#add-block').addEventListener('click', () => addRow($('#blocks'), [
-    { placeholder: 'from HH:MM', key: 'start' },
-    { placeholder: 'to HH:MM', key: 'end' },
-    { placeholder: 'reason', key: 'reason', size: 22 }]));
+  // Blocked windows in local time or UT (2026-11-11). UT is sent as an
+  // 'HH:MM UT' suffix, which night_plan_io.resolve_local_dt places on the night.
+  const blockUnit = () => ($('#block-tz').value === 'ut' ? 'UT' : 'local');
+  const blockPlaceholders = () => {
+    $('#blocks').querySelectorAll('input[data-key="start"]').forEach((i) => {
+      i.placeholder = `from HH:MM ${blockUnit()}`; });
+    $('#blocks').querySelectorAll('input[data-key="end"]').forEach((i) => {
+      i.placeholder = `to HH:MM ${blockUnit()}`; });
+  };
+  $('#block-tz').addEventListener('change', blockPlaceholders);
+  $('#add-block').addEventListener('click', () => {
+    addRow($('#blocks'), [
+      { placeholder: 'from HH:MM', key: 'start' },
+      { placeholder: 'to HH:MM', key: 'end' },
+      { placeholder: 'reason', key: 'reason', size: 22 }]);
+    blockPlaceholders();
+  });
 
   /* Reads the table and moves on. This is the page's one forward action, so
      a table we cannot read unambiguously must stop here rather than landing
@@ -323,7 +345,9 @@ async function renderSetup(params) {
         outputDir: $('#output-dir').value.trim(),
         assumeMasks: $('#assume-masks').checked,
         noPartials: $('#no-partials').checked,
-        blocks: collectRows($('#blocks')).filter((b) => b.start && b.end),
+        blocks: collectRows($('#blocks')).filter((b) => b.start && b.end)
+          .map((b) => ($('#block-tz').value === 'ut'
+            ? { ...b, start: asUT(b.start), end: asUT(b.end) } : b)),
         config: Object.fromEntries(Object.entries(configInputs)
           .map(([k, input]) => [k, input.value])),
         scenarios: collectRows($('#scenarios')).filter((r) => r.name).map((r) => ({
@@ -666,7 +690,7 @@ function renderTimeline(plan, host) {
     seg.style.width = `${Math.max(pct(end) - pct(start), 0.25)}%`;
     const heading = `${label || cls} · ${hhmm(start)}–${hhmm(end)} `
       + `(${Math.round(mins(start, end))} min)`;
-    attachHover(seg, heading, detail || []);
+    attachHover(seg, heading, [...(detail || []), ['UT', `${utClock(start)}–${utClock(end)}`]]);
     track.append(seg);
   };
 
@@ -721,7 +745,17 @@ function renderTimeline(plan, host) {
 
   host.append(track);
 
-  // LST under the local-time axis (T2.3). Sidereal time runs 1.0027379x
+  // UT under the local-time axis (2026-11-11), at the same instants as the
+  // local ticks.
+  const utRow = el('div', 'ut-row');
+  for (let t = Math.ceil((t0 + off) / hour) * hour - off; t <= t1; t += hour) {
+    const tick = el('div', 'tick', siteTime(t, 0));
+    tick.style.left = `${((t - t0) / (t1 - t0)) * 100}%`;
+    utRow.append(tick);
+  }
+  host.append(utRow);
+
+  // LST under the UT axis (T2.3). Sidereal time runs 1.0027379x
   // faster than solar, so it is extrapolated from the LST at night start.
   if (plan.lst_start_h != null) {
     const row = el('div', 'lst-row');
@@ -735,8 +769,10 @@ function renderTimeline(plan, host) {
       tick.style.left = `${((t - t0) / (t1 - t0)) * 100}%`;
       row.append(tick);
     }
-    host.append(row, el('div', 'lst-label', 'upper axis: local time · lower axis: LST'));
+    host.append(row);
   }
+  host.append(el('div', 'lst-label', plan.lst_start_h != null
+    ? 'axes, top to bottom: local time · UT · LST' : 'axes, top to bottom: local time · UT'));
 }
 
 async function renderPlan() {
@@ -1166,9 +1202,75 @@ function renderRescue(plan) {
 
 /* --------------------------------------------------------------- finders */
 
-/* Survives the re-render that follows a generate, so the form still
-   shows what was actually asked for. */
+/* Survives navigation, so the form still shows what was asked for. */
 let lastSlitMode = 'parallactic';
+
+/* The slit report last shown for a plan. A single-card re-render merges
+   its row into this rather than replacing the whole table. */
+let lastSlitReport = null;      // { outputDir, report }
+
+/* One generation at a time: the server refuses a second run on the same
+   plan (409), and the buttons are disabled so it never gets that far. */
+let finderBusy = false;
+
+/* The page may have been left mid-run, so every write goes through these:
+   a detached element absorbs the update instead of throwing. */
+const fdNotes = () => $('#fd-notes') || el('div');
+const fdStatus = () => $('#fd-status') || el('span');
+
+function setFinderBusy(busy) {
+  finderBusy = busy;
+  document.querySelectorAll('#fd-generate, #finder-grid button')
+    .forEach((b) => { b.disabled = busy; });
+}
+
+/* What went wrong per target. A failed chart is an error; a chart without
+   an offset star is a warning -- the chart is fine, but the starlist will
+   have no offset for it. Before this the offset-star failure was never
+   shown anywhere. */
+function showFinderResults(results) {
+  results.forEach((r) => {
+    if (r.error) {
+      fdNotes().append(notice(`${r.name}: no chart — ${r.error}`, true));
+    } else if (r.offset_star_error) {
+      fdNotes().append(notice(`${r.name}: chart drawn, but no offset star — `
+                              + r.offset_star_error));
+    }
+  });
+}
+
+/* Asking for both candidates and silently getting a parallactic slit
+   would be the worst outcome: you'd set an angle you didn't choose. */
+function showFellBack(result) {
+  if (result.fell_back && result.fell_back.length) {
+    fdNotes().append(notice(
+      `${result.fell_back.length} target(s) are not from FFFF-PZ and have `
+      + `no second candidate — ${result.fell_back.join(', ')} stayed at `
+      + 'the parallactic angle.'));
+  }
+}
+
+/* Fold one run's report rows into the table already on screen, in
+   schedule order. A target that failed this time loses its old row: the
+   angle it showed is no longer what was last attempted. */
+function mergeSlitReport(plan, report) {
+  const prev = lastSlitReport && lastSlitReport.outputDir === plan.output_dir
+    ? lastSlitReport.report : null;
+  let merged = report;
+  if (prev) {
+    const order = new Map(plan.schedule.map((t, i) => [t.name, i]));
+    const touched = new Set(report.rows.map((r) => r.name));
+    report.lines.forEach((line) => touched.add(line.split(':')[0]));
+    const rows = prev.rows.filter((r) => !touched.has(r.name))
+      .concat(report.rows)
+      .sort((a, b) => (order.get(a.name) ?? 1e6) - (order.get(b.name) ?? 1e6));
+    merged = { ...report, rows,
+               requested: prev.requested === report.requested
+                 ? report.requested : 'mixed' };
+  }
+  lastSlitReport = { outputDir: plan.output_dir, report: merged };
+  renderSlitReport(merged);
+}
 
 async function renderFinders() {
   const plan = await loadPlan();
@@ -1176,14 +1278,17 @@ async function renderFinders() {
   renderNav('/finders');
   const chosen = $(`input[name="fd-slit"][value="${lastSlitMode}"]`);
   if (chosen) chosen.checked = true;
+  if (lastSlitReport && lastSlitReport.outputDir === plan.output_dir) {
+    renderSlitReport(lastSlitReport.report);
+  }
+  if (finderBusy) fdStatus().textContent = 'A finder run is still in progress…';
 
   $('#fd-generate').addEventListener('click', async () => {
-    const status = $('#fd-status');
-    const button = $('#fd-generate');
+    if (finderBusy) return;
     lastSlitMode = $('input[name="fd-slit"]:checked').value;
-    button.disabled = true;
-    status.textContent = 'Fetching images and offset stars…';
-    $('#fd-notes').replaceChildren();
+    fdStatus().textContent = 'Fetching images and offset stars…';
+    fdNotes().replaceChildren();
+    setFinderBusy(true);
     const stopPolling = startFinderProgress(plan.output_dir);
     try {
       const result = await api('/api/finders/generate', {
@@ -1192,72 +1297,105 @@ async function renderFinders() {
         body: JSON.stringify({
           output_dir: plan.output_dir,
           slit_mode: lastSlitMode,
-          overwrite: $('#fd-overwrite').checked,
+          overwrite: $('#fd-overwrite')?.checked ?? false,
         }),
       });
-      const failed = result.results.filter((r) => r.error);
-      status.textContent = `${result.results.length - failed.length} of `
-        + `${result.results.length} done (${result.mode})`;
-      failed.forEach((r) => $('#fd-notes')
-        .append(notice(`${r.name}: ${r.error}`, true)));
-      // Asking for both candidates and silently getting a parallactic slit
-      // would be the worst outcome: you'd set an angle you didn't choose.
-      if (result.fell_back && result.fell_back.length) {
-        $('#fd-notes').append(notice(
-          `${result.fell_back.length} target(s) are not from FFFF-PZ and have `
-          + `no second candidate — ${result.fell_back.join(', ')} stayed at `
-          + 'the parallactic angle.'));
-      }
-      const report = result.report;
-      await renderFinders();   // reload the grid with what was just made
-      if (report) renderSlitReport(report);
+      const n = result.results.length;
+      const failed = result.results.filter((r) => r.error).length;
+      const kept = result.results.filter((r) => r.skipped && !r.error).length;
+      fdStatus().textContent = `${n - failed - kept} drawn, ${kept} unchanged, `
+        + `${failed} failed (${result.mode})`;
+      showFinderResults(result.results);
+      showFellBack(result);
+      // A full run is the whole night's record: replace, don't merge.
+      lastSlitReport = { outputDir: plan.output_dir, report: result.report };
+      if ($('#fd-report')) renderSlitReport(result.report);
     } catch (err) {
-      $('#fd-notes').replaceChildren(notice(err.message, true));
-      status.textContent = '';
+      fdNotes().replaceChildren(notice(err.message, true));
+      fdStatus().textContent = '';
     } finally {
       stopPolling();
-      button.disabled = false;
+      // Refresh only the grid. Re-rendering the whole page here is what
+      // used to wipe the errors and the status line straight after
+      // writing them. Also done on failure: some charts may have landed.
+      await renderFinderGrid(plan);
+      setFinderBusy(false);
     }
   });
 
-  const files = await api(`/api/finders?output_dir=${encodeURIComponent(plan.output_dir)}`);
-  const grid = $('#finder-grid');
+  await renderFinderGrid(plan);
+}
 
-  /* T2.7: one chart at a time, so fixing one target doesn't mean
-     re-fetching every image. */
-  const generateOne = async (target, button) => {
-    button.disabled = true;
-    button.textContent = '…';
-    $('#fd-notes').replaceChildren();
-    try {
-      const result = await api('/api/finders/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ output_dir: plan.output_dir, targets: [target],
-                               slit_mode: lastSlitMode, overwrite: true }),
-      });
-      result.results.filter((r) => r.error)
-        .forEach((r) => $('#fd-notes').append(notice(`${r.name}: ${r.error}`, true)));
-      await renderFinders();
-    } catch (err) {
-      $('#fd-notes').replaceChildren(notice(err.message, true));
-      button.disabled = false;
-      button.textContent = 'retry';
-    }
+/* T2.7: one chart at a time, so fixing one target doesn't mean
+   re-fetching every image. Uses the slit choice currently ticked above
+   (the button says so), not the one from the last full run. */
+async function generateOneFinder(plan, target, button) {
+  if (finderBusy) return;
+  const picked = $('input[name="fd-slit"]:checked');
+  if (picked) lastSlitMode = picked.value;
+  button.textContent = '…';
+  fdNotes().replaceChildren();
+  fdStatus().textContent = `Drawing ${target}…`;
+  setFinderBusy(true);
+  try {
+    const result = await api('/api/finders/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ output_dir: plan.output_dir, targets: [target],
+                             slit_mode: lastSlitMode, overwrite: true }),
+    });
+    const bad = result.results.some((r) => r.error);
+    fdStatus().textContent = `${target}: ${bad ? 'failed' : 'redrawn'} `
+      + `(${result.mode})`;
+    showFinderResults(result.results);
+    showFellBack(result);
+    if (result.report) mergeSlitReport(plan, result.report);
+  } catch (err) {
+    fdNotes().replaceChildren(notice(err.message, true));
+    fdStatus().textContent = '';
+  } finally {
+    await renderFinderGrid(plan);
+    setFinderBusy(false);
+  }
+}
+
+/* The chart grid alone: placeholders for targets without a chart, then
+   the charts in schedule order. Safe to call while the rest of the page
+   (status, notes, slit report) keeps what it is showing. */
+async function renderFinderGrid(plan) {
+  const grid = $('#finder-grid');
+  if (!grid) return;           // the observer has moved to another page
+  let files;
+  try {
+    files = await api(`/api/finders?output_dir=${encodeURIComponent(plan.output_dir)}`);
+  } catch (err) {
+    grid.replaceChildren(notice(`Could not list the charts: ${err.message}`, true));
+    return;
+  }
+  grid.replaceChildren();
+  const button = (label, title, onClick) => {
+    const b = el('button', 'btn-now', label);
+    b.type = 'button';
+    if (title) b.title = title;
+    b.disabled = finderBusy;
+    b.addEventListener('click', (e) => { e.stopPropagation(); onClick(b); });
+    // Enter/Space on the button must not also open the lightbox.
+    b.addEventListener('keydown', (e) => e.stopPropagation());
+    return b;
   };
 
   // Scheduled targets with no chart yet get a placeholder card.
   const have = new Set(files.map((f) => f.name.replace('_finder.png', '')));
   plan.schedule.filter((t) => !have.has(t.name)).forEach((t) => {
     const fig = el('figure', 'missing');
-    const b = el('button', 'btn-now', 'Generate');
-    b.type = 'button';
-    b.addEventListener('click', () => generateOne(t.name, b));
-    fig.append(el('figcaption', '', `${t.name} · no chart yet`), b);
+    fig.append(el('figcaption', '', `${t.name} · no chart yet`),
+               button('Generate', 'Draw just this chart, with the slit choice above',
+                      (b) => generateOneFinder(plan, t.name, b)));
     grid.append(fig);
   });
   if (!files.length) {
     grid.prepend(el('p', 'hint',
       'No finder charts yet — generate them all above, or one at a time below.'));
+    lightboxSlots = [];
     return;
   }
 
@@ -1290,11 +1428,12 @@ async function renderFinders() {
     img.alt = target;
     img.src = src;
     const cap = el('figcaption', '', caption);
-    const redo = el('button', 'btn-now', 'Re-render');
-    redo.type = 'button';
-    redo.title = 'Regenerate just this chart, with the slit choice above';
-    redo.addEventListener('click', (e) => { e.stopPropagation(); generateOne(target, redo); });
-    cap.append(redo);
+    // Only scheduled targets can be redrawn: the server draws from the
+    // plan's schedule, so a stray chart would come back "0 of 0".
+    if (block) {
+      cap.append(button('Re-render', 'Regenerate just this chart, with the slit choice above',
+                        (b) => generateOneFinder(plan, target, b)));
+    }
     fig.append(img, cap);
     fig.addEventListener('click', () => openLightbox(i));
     fig.addEventListener('keydown', (e) => {

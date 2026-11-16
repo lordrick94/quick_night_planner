@@ -1318,6 +1318,8 @@ uninteresting ones -- log the reason at every skip point.
   puts the slit ~16 deg off. Lick finders, sidecars and starlist rows now
   carry `#TUB = x or y`; always quote **both** settings, 180 deg apart, since
   which is reachable depends on where the tub already sits.
+  **DISPUTED 2026-11-11 (see v0.87):** 2D traces in Lick-2026B-02 data fit
+  TUB = sky PA directly, not the 0.87 scale. Treat (3) as unverified.
   (4) The calcint table runs 20..380 and its last 20 deg deliberately repeat
   the first 20 -- never normalise with a plain `% 360`, or 380 reads 17.45
   instead of 330.64.
@@ -2074,3 +2076,136 @@ uninteresting ones -- log the reason at every skip point.
     has an "S/N goal" box column; one "Apply changes & regenerate" button
     sends both kinds of edit.
   - The test fake ETC (conftest) has S/N ∝ sqrt(t), so time ∝ S/N².
+- **v0.86 (2026-11-10)** — External services are fragile. On 2026-11-10:
+  - CDS hips2fits timed out.
+  - CDS VizieR returned 404.
+  - The CfA VizieR mirror served Gaia DR3 as a malformed table that
+    astroquery reads as zero rows. That is silent, so CfA must never be
+    trusted for "no star".
+  - ESA's Gaia TAP was intermittent (503). A magnitude cut in its ADQL
+    defeats the positional index (50 s against 2.6 s), so cut locally.
+  - STScI (PS1 cutouts, DSS, MAST PS1 DR2 catalogue) stayed up.
+
+  `finder.py` changes:
+  - `IMAGE_SOURCES` and `GAIA_SOURCES` are tried in order, with a 12 s
+    timeout per service. Labels are recorded (`image_source`,
+    `offset_star_catalog`, `offset_star_band`).
+  - The PS1 star cut is one-sided: rPSF − rKron < 0.05.
+  - A candidates slit is centred midway between the candidates (sidecar
+    `slit_centre_*`, starlist `_C`, offsets to `_C`).
+  - Charts show a PA/TUB box.
+
+  Starlist rows quote PA and TUB on both the target and `_C` rows, and
+  names have whitespace replaced by `_`. To run finders and the starlist
+  without the GUI: `scripts/make_finders.py PLAN_DIR --slit-mode candidates
+  --overwrite`. Python-imported server code goes stale, so restart the
+  server after editing it.
+- **v0.87 (2026-11-11)** — Two things.
+  **(a) The Shane tub may read sky PA directly.** Tested `calcint.c`
+  against Kast raw headers in the REDUCTIONS runs (Lick-2026B-02, -03; 90
+  on-sky red frames, `scripts/tub_header_survey.py`). Parallactic is a poor
+  reference: these observers mostly set a two-candidate PA, so neither
+  model fits it. Against the requested Pri->Sec PA, TUB matches the *sky PA
+  dialled directly* on 3 blocks (0.1-4.8 deg) and `calcint(PA)` on none
+  (11-29 deg) (`scripts/tub_vs_requested_pa.py`). Physical test
+  (`scripts/tub_slit_occupancy.py`): two B-02 targets have a second trace
+  on the slit. At TUB 193.1 a bright star and the primary sit on a slit at
+  sky PA 193.1 (0.18" off-axis); `calcint` puts the primary 8.6" off. At
+  TUB 113.7 a catalogued star at 23.5" matches the second trace only for a
+  sky-PA slit; `calcint` has nothing between 4" and 50". The v0.80-era
+  "confirmation" (TUB 194.80 = calcint(parallactic) to 1.3 deg) is circular
+  if the observer set the tub from pa.c's Nixie output. Caveat: only TUB
+  ~113 and ~193 tested; one setting cannot separate scale from offset. A
+  frame near TUB 30 or 280 would settle it. Until then, do not trust
+  `#TUB =` on starlists; dial sky PA and verify on a bright pair.
+  **(b) Finders page buttons.** After a generate, refresh only the grid
+  (`renderFinderGrid`), never the whole page: `renderFinders()` re-clones
+  the template, which erased the errors and status it had just written.
+  One run per plan at a time (`_FINDER_RUNNING` + 409; buttons disabled
+  while busy). Per-card runs read the slit radio as it is now, merge their
+  row into the shown report, and the server rewrites `slit_report.txt`
+  from all sidecars (`finder.plan_slit_entries`) instead of one row.
+  Sidecars now record `requested_mode`, so a merged report can tell "fell
+  back" from "drawn at parallactic on purpose earlier". Offset-star
+  failures are shown as warnings.
+- **v0.87 (2026-11-11)** — UT times.
+  - `night_plan_io.resolve_local_dt` accepts `HH:MM UT` / `UTC` / `Z`, via
+    `resolve_ut_time`: the instant between local noon on the evening date
+    and local noon the next day with that UT reading. Check for the UT form
+    before the ISO branch, which tests `'T' in spec`.
+  - The setup page has a local/UT switch for blocked windows (sent as a
+    ` UT` suffix).
+  - The plan timeline has a UT axis row (local · UT · LST) and UT in every
+    hover.
+  - frontend/app.js already has a `utHHMM` for log tables, so the plan
+    timeline's helper is `utClock`.
+  - Known issue: a Kast target's 5-min slew+acq can overlap the tail of a
+    blocked window (only science is pushed past the block).
+- **v0.88 (2026-11-11)** — Targets outside the schedule.
+  - `scripts/add_unscheduled_target.py -- PLAN_DIR NAME RA DEC`
+    [--minutes 30] [--start HH:MM]. It draws the finder through
+    `generate_for_plan`, using a one-target stand-in plan, and appends
+    target/_S/_C rows under a "not scheduled" heading. A rerun replaces them.
+  - Default PA window: the minutes centred on the highest point after now.
+    The script prints the PA track every 30 min.
+  - The `--` is needed for a negative Dec.
+  - Regenerating the starlist (GUI or make_finders) drops these rows, so
+    rerun the script after that.
+
+- **v0.89 (2026-11-14 UTC)** — AstroScheduler re-read at v1.3.0, and the
+  Decision Map artifact (https://claude.ai/artifact/6ZnFg47ofPrqvFEWtawbSJ)
+  now has three tabs: night-planner, AstroScheduler, Side by side.
+  - The checkout to read is now `~/Projects/misc_repos/AstroScheduler`
+    (tag v1.3.0, commit 7e636a6). The solver lives in
+    `astroscheduler/core.py`, the API in `api.py`, and the limits in
+    `telescopes.json`. `docs/priority_comparison_astroscheduler.md` cites the
+    old `scheduler.py` and is stale on our side (it says we have no priority
+    field).
+  - **"Mandatory but movable" is bounded by the 20000-call cap.** The search
+    is depth-first and places earlier-placed targets first, each with its
+    previous start first. Only the last-searched targets ever move far. In the
+    toy "cap" case (SIM-D needs SIM-A to start 72 min later), the search tried
+    SIM-A in 1 of its 290 starts and dropped SIM-D, even though a legal
+    four-target schedule exists and is cheaper on its own cost. The real
+    v1.3.0 solver does the same.
+  - The AstroScheduler block length is a magnitude lookup only (Kast table
+    clamped at 13–20) plus 7 min. `calculate_exposure_time` (moon,
+    extinction, sn_mode) is never called, so `sn_mode` has no effect.
+  - Lick limits differ from ours: Dec −35…+72 (ours ≤ +82), airmass ≤ 1.7
+    (ours: none, HA only), and overhead 7 min (ours 5). The Keck 15-min
+    equator slew only changes the comment text. The importer defaults
+    priority to 3.0 (API 1.0), and priority 0.0 means a standard star.
+  - Its `conflicts` list can name a target twice (prelim + final solve).
+  - Toy comparison: `scripts/compare_scheduler_styles_toy.py` (both rule sets
+    in miniature, JSON out) and `scripts/astroscheduler_toy_check.py` (runs
+    the real package on real-sky versions; it agrees to within 2 min). Both
+    run in `frb_env`, which has astroplan 0.10.1 and astropy 8.0.2.
+- **v0.90 (2026-11-15 UTC)** — AstroScheduler recommendations implemented
+  (Lick/Kast path only).
+  - `kast_calculations.retime_schedule()` runs between
+    `schedule_by_priority` and `backfill_partials`. Helpers are in
+    `night_planner/retime.py`. The greedy picks the set. A fixed-order DP
+    (0.5-min grid, exact, no cap) then picks starts that minimise the summed
+    block airmass under `--airmass-rule`. Dropped targets are then inserted
+    at the cheapest feasible position (full length first, then the longest
+    partial by bisection). Goals rank: full targets > partial minutes >
+    airmass. Without the partial step, re-timing traded a P1 partial for
+    0.02 in airmass; keep that ranking.
+  - `--placement earliest` returns the greedy schedule unchanged when there
+    are no precedence constraints. `airmass` is the default.
+  - `--previous-plan DIR`: STABILITY_PER_MIN = 0.002 airmass/min.
+  - `schedule_before` column (aliases schedule_before, precedes), stored
+    ';'-joined. A cycle is ignored with a warning; an infeasible pair drops
+    the later target.
+  - Limits: `night_planner/data/site_limits.json` + `site_limits.py`;
+    `--limit KEY=VALUE` (ha_east, ha_west, dec_max, dec_min, airmass_max;
+    'none' removes one). The defaults equal the old constants. The +72/+82
+    question is still open.
+  - `ScheduledTarget.airmass_block` (new, defaulted): block airmass under
+    the plan's rule, for every scheduled target including empirical ones.
+  - Lick-2026B-04 remade as `pvt_Nighplans/Lick-2026B-04_v2`: 10 targets
+    (8 full + 2 partial) against 9 (7 + 2); 548 against 480 science min;
+    mean airmass 1.52 against 1.62. `scripts/compare_plan_airmass.py`
+    compares any two Kast plans.
+  - `add_unscheduled_target.py` refuses a past night unless given
+    `--start`.
