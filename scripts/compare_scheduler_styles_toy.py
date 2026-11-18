@@ -11,6 +11,10 @@ targets, so the two styles can be drawn side by side:
   tier 1 by one earliest-window-close-first greedy pass, lower tiers placed
   greedily inside the gaps the tiers above left (placed rows never move),
   then partial backfill of anything dropped for time (>= 10 min).
+* night-planner since 2026-11-15 (--placement airmass, the default): the
+  same tier pass, then the real night_planner.retime functions re-time the
+  placed targets to the lowest summed worst-airmass and insert dropped
+  targets (full, then the longest partial) where shifting makes room.
 * AstroScheduler (astroscheduler/core.py, v1.3.0): 1-minute chunks valid
   only inside the HA limits, Dec -35..+72 and airmass <= 1.7; a block is
   exposure + 7 min overhead; priority tiers solved in order, with every
@@ -38,7 +42,12 @@ import argparse
 import json
 import math
 
+import sys
+from pathlib import Path
+
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Site and limits --------------------------------------------------------
 LAT_DEG = 37.3414                      # Lick (both tools)
@@ -206,6 +215,96 @@ def run_night_planner(targets):
             b['airmass'] = next(p['airmass'] for p in placed if p['name'] == b['name'])
     windows = {t['name']: list(t['win']) for t in pool}
     return dict(steps=steps, outcome=outcome, windows=windows)
+
+
+def run_night_planner_retimed(targets, greedy):
+    """
+    night-planner since 2026-11-15: the tier pass, then re-timing.
+
+    Uses the real night_planner.retime functions (solve_order,
+    insert_target, block_metric) on the toy grid, in the order
+    kast_calculations.retime_schedule applies them: the targets the tier
+    pass placed are re-timed, in order, to the lowest summed worst-airmass;
+    each dropped target is then offered a full-length insertion, then the
+    longest partial (>= NP_MIN_PARTIAL) that fits when the others shift.
+
+    Inputs: targets (list of dicts), greedy (run_night_planner output).
+    Outputs: dict with steps (re-timed, then inserted), outcome, windows.
+    """
+    from night_planner import retime as rt
+    win = greedy['windows']
+    by_name = {t['name']: t for t in targets}
+    grid = np.arange(NIGHT_MIN + 1, dtype=float)
+
+    def cost(name, length):
+        t = by_name[name]
+        am = np.array([airmass(m, t) for m in grid])
+        c = rt.block_metric(am, length, 'worst', step=1.0)
+        ok = (grid >= win[name][0]) & (grid + length <= win[name][1])
+        return np.where(ok, c, np.inf)
+
+    def blocks(names, lengths, starts, partial=()):
+        out = []
+        for n, length, s in zip(names, lengths, starts):
+            t = by_name[n]
+            am = float(np.median([airmass(m + 0.5, t) for m in range(int(s), int(s + length))]))
+            out.append(dict(name=n, start=float(s), end=float(s + length),
+                            priority=t['priority'], airmass=round(am, 3),
+                            **({'partial': True} if n in partial else {})))
+        return out
+
+    base = sorted(greedy['steps'][-2]['blocks'], key=lambda b: b['start'])
+    names = [b['name'] for b in base]
+    lengths = [b['end'] - b['start'] for b in base]
+    starts, _ = rt.solve_order([cost(n, l) for n, l in zip(names, lengths)],
+                               lengths, NP_GAP_MIN, step=1.0)
+    steps = [dict(label='Re-timed for airmass', blocks=blocks(names, lengths, starts))]
+
+    outcome = {n: dict(status='scheduled', stage='', reason='') for n in names}
+    for n in by_name:
+        if n not in win:
+            outcome[n] = greedy['outcome'][n]
+    dropped = sorted([n for n in win if n not in names],
+                     key=lambda n: (by_name[n]['priority'], win[n][1]))
+    for n in dropped:
+        exp = by_name[n]['exp']
+        pos, new, _ = rt.insert_target([cost(x, l) for x, l in zip(names, lengths)],
+                                       lengths, names, cost(n, exp), exp, n,
+                                       NP_GAP_MIN, {}, step=1.0)
+        if pos is None:
+            continue
+        names.insert(pos, n)
+        lengths.insert(pos, float(exp))
+        starts = new
+        outcome[n] = dict(status='scheduled', stage='',
+                          reason='inserted: fits once the placed targets shift')
+    partial = set()
+    for n in dropped:
+        if outcome.get(n, {}).get('status') == 'scheduled':
+            continue
+        lo, hi = float(NP_MIN_PARTIAL), float(min(by_name[n]['exp'], win[n][1] - win[n][0]))
+        best = None
+        for length in np.arange(np.floor(hi), lo - 1e-9, -1.0):
+            pos, new, _ = rt.insert_target([cost(x, l) for x, l in zip(names, lengths)],
+                                           lengths, names, cost(n, length), length, n,
+                                           NP_GAP_MIN, {}, step=1.0)
+            if pos is not None:
+                best = (length, pos, new)
+                break
+        if best is None:
+            outcome[n] = dict(status='rejected', stage='3. Scheduling',
+                              reason='no room even after re-timing')
+            continue
+        length, pos, new = best
+        names.insert(pos, n)
+        lengths.insert(pos, float(length))
+        starts = new
+        partial.add(n)
+        outcome[n] = dict(status='partial', stage='',
+                          reason=f"PARTIAL: {length:.0f} of the {by_name[n]['exp']} min it needs")
+    steps.append(dict(label='Dropped targets re-fitted',
+                      blocks=blocks(names, lengths, starts, partial)))
+    return dict(steps=steps, outcome=outcome, windows=win)
 
 
 # ---------------------------------------------------------------- AstroScheduler
@@ -413,7 +512,9 @@ def main():
     np.random.seed(42)  # nothing here is random; fixed by convention
     res = dict(night_min=NIGHT_MIN, kast_lookup=kast_lookup_durations(), scenarios={})
     for key, toy in SCENARIOS.items():
-        res['scenarios'][key] = dict(targets=toy, night_planner=run_night_planner(toy),
+        greedy = run_night_planner(toy)
+        res['scenarios'][key] = dict(targets=toy, night_planner=greedy,
+                                     night_planner_retimed=run_night_planner_retimed(toy, greedy),
                                      astroscheduler=run_astroscheduler(toy))
     res['scenarios']['cap']['witness'] = check_witness(SCENARIOS['cap'], CAP_WITNESS)
     text = json.dumps(res, indent=1)

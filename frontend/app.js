@@ -209,6 +209,11 @@ async function renderSetup(params) {
   /* Configuration card: dropdowns limited to what the ETC can model. */
   const configFields = $('#config-fields');
   const configInputs = {};
+  // Placement extras (2026-11-15, Kast): pointing-limit overrides and a plan
+  // whose start times to keep. Filled only when the server offers them.
+  const limitInputs = {};
+  let limitDefaults = {};
+  let previousSelect = null;
   try {
     const opt = await api(`/api/instruments/${encodeURIComponent(instrument)}/options`);
     const prev = state.setup?.instrument === instrument ? (state.setup.config || {}) : {};
@@ -254,9 +259,74 @@ async function renderSetup(params) {
     configFields.append(snl);
     choice('airmass_rule', 'ETC airmass over the block', opt.airmass_rules,
            { worst: 'worst in the block', mid: 'mid-block', best: 'best in the block' });
+    if (opt.placements) {
+      if (prev.placement == null) prev.placement = opt.default_placement;
+      choice('placement', 'Placement', opt.placements,
+             { airmass: 'lowest airmass, dropped targets re-fitted',
+               earliest: 'as early as possible (old rule)' });
+      renderPlacementExtras(opt, state.setup?.instrument === instrument ? state.setup : {});
+    }
   } catch (err) {
     configFields.replaceChildren(notice(`Configuration options unavailable: ${err.message}`, true));
   }
+
+  function renderPlacementExtras(opt, prevSetup) {
+    const box = $('#placement-extras');
+    if (!box) return;
+    box.replaceChildren();
+    box.append(el('h3', '', 'Pointing limits (Shane)'));
+    box.append(el('p', 'hint', 'Defaults come from night_planner/data/site_limits.json; '
+      + 'hover a box for where the value comes from. Change one to override it for this '
+      + 'plan only. Leave a box blank for no limit.'));
+    const grid = el('div', 'grid');
+    const labels = { ha_east: 'HA east limit [h]', ha_west: 'HA west limit [h]',
+      dec_max: 'Dec max [deg]', dec_min: 'Dec min [deg]', airmass_max: 'Airmass max' };
+    limitDefaults = {};
+    Object.entries(opt.limits).forEach(([key, info]) => {
+      limitDefaults[key] = info.value;
+      const input = el('input');
+      input.type = 'number';
+      input.step = 'any';
+      input.id = `limit-${key}`;
+      input.placeholder = 'none';
+      const saved = prevSetup.limits && key in prevSetup.limits ? prevSetup.limits[key]
+        : info.value;
+      input.value = saved == null ? '' : String(Number(Number(saved).toFixed(4)));
+      input.title = info.source || '';
+      limitInputs[key] = input;
+      const l = el('label', '', labels[key] || key);
+      l.append(input);
+      grid.append(l);
+    });
+    box.append(grid);
+    const pl = el('label', '', 'Keep start times from ');
+    previousSelect = el('select');
+    previousSelect.id = 'previous-plan';
+    const none = el('option', '', 'no earlier plan');
+    none.value = '';
+    previousSelect.append(none);
+    pl.append(previousSelect);
+    pl.append(el('span', 'hint', ' targets stay where that plan put them unless moving '
+      + 'clearly lowers their airmass; only used with airmass placement'));
+    box.append(pl);
+    api('/api/plans').then((plans) => {
+      plans.filter((p) => p.has_plan).forEach((p) => {
+        const o = el('option', '', p.name);
+        o.value = p.output_dir;
+        previousSelect.append(o);
+      });
+      previousSelect.value = prevSetup.previousPlan || '';
+    }).catch(() => {});
+  }
+
+  /* Changed limits only, as {key: number or null}. */
+  const changedLimits = () => Object.fromEntries(Object.entries(limitInputs)
+    .map(([k, input]) => [k, input.value.trim() === '' ? null : Number(input.value)])
+    .filter(([k, v]) => {
+      const d = limitDefaults[k];
+      if (v == null || d == null) return v !== d && !(v == null && d == null);
+      return Math.abs(v - d) > 1e-6;
+    }));
 
   /* Scenarios (T4.1): presets plus free rows. */
   const scenarioFields = [
@@ -350,6 +420,8 @@ async function renderSetup(params) {
             ? { ...b, start: asUT(b.start), end: asUT(b.end) } : b)),
         config: Object.fromEntries(Object.entries(configInputs)
           .map(([k, input]) => [k, input.value])),
+        limits: changedLimits(),
+        previousPlan: previousSelect?.value || '',
         scenarios: collectRows($('#scenarios')).filter((r) => r.name).map((r) => ({
           name: r.name,
           seeing: r.seeing ? Number(r.seeing) : null,
@@ -500,6 +572,9 @@ async function renderPriorities() {
           etc: setup.config?.etc || null,
           target_sn: setup.config?.target_sn ? Number(setup.config.target_sn) : null,
           airmass_rule: setup.config?.airmass_rule || null,
+          placement: setup.config?.placement || null,
+          previous_plan: setup.previousPlan || null,
+          limits: setup.limits || {},
           scenarios: setup.scenarios || [],
         }),
       });
@@ -651,6 +726,7 @@ function targetDetail(t) {
     ['mode', t.mode],
     ['mag', t.mag?.toFixed(2)],
     ['RA / Dec', coords],
+    ['block airmass', t.airmass_block != null ? t.airmass_block.toFixed(2) : null],
     ['airmass', t.airmass != null ? `${t.airmass.toFixed(2)}`
       + (t.airmass_rule ? ` (${t.airmass_rule} over the block; best ${t.airmass_min?.toFixed(2)})` : '') : null],
     ['S/N red', t.sn_sub_red != null
@@ -913,8 +989,12 @@ async function renderPlan() {
         + `<td><a href="#/airmass?dir=${encodeURIComponent(plan.output_dir)}&target=${t.name}">${t.name}</a></td>`
         + `<td>${pill} ${t.mode}${req}</td>`
         + `<td class="num">${t.mag?.toFixed(1) ?? '—'}</td>`
-        + `<td class="num"${t.airmass_rule ? ` title="ETC airmass (${t.airmass_rule} over the block); best tonight ${t.airmass_min?.toFixed(2) ?? '—'}"` : ''}>`
-        + `${t.airmass?.toFixed(2) ?? '—'}</td>`
+        // The block's own airmass when the plan has it (2026-11-15); the
+        // ETC's input airmass otherwise, so older plans read as before.
+        + (t.airmass_block != null
+          ? `<td class="num" title="airmass over the scheduled block${t.airmass != null ? `; ETC run at ${t.airmass.toFixed(2)}` : ''}">${t.airmass_block.toFixed(2)}</td>`
+          : `<td class="num"${t.airmass_rule ? ` title="ETC airmass (${t.airmass_rule} over the block); best tonight ${t.airmass_min?.toFixed(2) ?? '—'}"` : ''}>`
+            + `${t.airmass?.toFixed(2) ?? '—'}</td>`)
         + `<td>${t.exposure_red || '—'}</td>`
         + `<td class="num"${t.slew_reason ? ` title="${t.slew_reason}"` : ''}>`
         + `${Math.round(t.slew_min)}${t.slew_reason ? '*' : ''}</td>`

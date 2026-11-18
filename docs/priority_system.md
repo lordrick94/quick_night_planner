@@ -154,6 +154,11 @@ loop and the partial backfill, using `night_planner/retime.py`.
 Only the Lick/Kast path does this so far; Keck/LRIS still places by window
 open.
 
+In the GUI (2026-11-16): the setup page's Configuration card has
+**Placement**, and the Constraints card has **Pointing limits (Shane)** and
+**Keep start times from** (Kast only). A re-solve from the plan or Rejections
+page anchors on the plan's own start times (`--previous-plan <itself>`).
+
 ## What outranks priority
 
 | Mechanism | Beats priority because |

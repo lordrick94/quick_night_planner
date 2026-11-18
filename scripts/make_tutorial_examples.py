@@ -180,6 +180,8 @@ def plan_summary(plan):
                      'end': m(t.end)})
         rows.append({'name': t.name, 'science': f'{_hhmm(t.science_start)}-{_hhmm(t.end)}',
                      'mode': t.mode, 'mag': t.mag, 'airmass': t.airmass,
+                     'airmass_block': (round(t.airmass_block, 2)
+                                       if t.airmass_block is not None else None),
                      'exposure': t.exposure_red, 'slew': t.slew_min,
                      'acq': t.acq_min, 'on_target': round(t.on_target_min, 1),
                      'readout': round(t.readout_min, 1), 'time_source': t.time_source,

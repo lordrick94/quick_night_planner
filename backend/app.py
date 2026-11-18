@@ -200,7 +200,31 @@ def instrument_options(name: str):
         'bands': list(ETC_FILTERS),
         'etcs': [name] + (['empirical'] if name == 'kast' else []),
         'airmass_rules': ['worst', 'mid', 'best'],
+        **_placement_options(name),
     }
+
+
+def _placement_options(name):
+    """
+    Placement rule and pointing limits the setup page may offer (2026-11-15).
+
+    Created by JXP and Claude
+
+    Inputs: instrument name.
+    Outputs: dict with 'placements', 'default_placement' and 'limits'
+    ({key: {'value', 'source'}}, from night_planner/data/site_limits.json);
+    empty for an instrument whose pipeline does not take them yet.
+    """
+    if 'placement' not in INSTRUMENTS.get(name, {}).get('supports', set()):
+        return {}
+    import json as _json
+    from night_planner.site_limits import LIMIT_KEYS, LIMITS_FILE
+    with open(LIMITS_FILE) as f:
+        raw = _json.load(f)['lick']
+    sources = raw.get('_sources', {})
+    return {'placements': ['airmass', 'earliest'], 'default_placement': 'airmass',
+            'limits': {k: {'value': raw.get(k), 'source': sources.get(k, '')}
+                       for k in LIMIT_KEYS}}
 
 
 @app.get('/api/etc')
@@ -344,6 +368,11 @@ class GenerateRequest(BaseModel):
     airmass_rule: Optional[str] = None  # worst | mid | best
     etc: Optional[str] = None           # registry name or 'pkg.mod:func'
     target_sn: Optional[float] = None   # per sub-exposure
+    # 2026-11-15 (Kast): how starts are chosen, a plan whose starts to keep,
+    # and per-run pointing-limit overrides {key: number or null}.
+    placement: Optional[str] = None     # airmass | earliest
+    previous_plan: Optional[str] = None  # a plan directory under the plans root
+    limits: dict = {}
     # Milestone 10 (T4.1): several plans for the night, one per scenario
     # [{name, seeing?, start?, blocks?}], each in <output_dir>/<slug>/.
     scenarios: list = []
@@ -396,9 +425,17 @@ def generate(req: GenerateRequest):
     config_keys = ('grism', 'grating', 'dichroic', 'slit', 'binning')
     if any(getattr(req, k) is not None for k in config_keys):
         asked.add('config')
-    asked |= {k for k in ('seeing', 'mag_band', 'airmass_rule', 'etc', 'target_sn')
+    asked |= {k for k in ('seeing', 'mag_band', 'airmass_rule', 'etc', 'target_sn',
+                          'placement', 'previous_plan')
               if getattr(req, k) is not None}
+    asked |= {'limits'} if req.limits else set()
     unsupported = sorted(asked - supports)
+    if unsupported and 'targets_csv' in supports:
+        # A general pipeline that just lacks a newer option (e.g. LRIS and
+        # placement, 2026-11-15): say that, not "use another instrument".
+        raise HTTPException(
+            400, f"the {req.instrument} pipeline does not accept "
+                 f"{', '.join(unsupported)} yet")
     if unsupported:
         raise HTTPException(
             400, f"the {req.instrument} pipeline does not accept "
@@ -425,6 +462,28 @@ def generate(req: GenerateRequest):
         raise HTTPException(400, 'airmass rule must be worst, mid or best')
     if req.target_sn is not None and req.target_sn <= 0:
         raise HTTPException(400, 'target S/N must be positive')
+    if req.placement is not None and req.placement not in ('airmass', 'earliest'):
+        raise HTTPException(400, 'placement must be airmass or earliest')
+    previous_plan = None
+    if req.previous_plan:
+        previous_plan = Path(req.previous_plan).expanduser()
+        if not previous_plan.is_absolute():
+            previous_plan = PLANS_ROOT / previous_plan
+        previous_plan = previous_plan.resolve()
+        if not previous_plan.is_relative_to(PLANS_ROOT.resolve()):
+            raise HTTPException(400, f'the previous plan must be under {PLANS_ROOT}')
+        if not (previous_plan / 'plan_result.json').exists():
+            raise HTTPException(400, f'{previous_plan.name} has no saved plan to keep '
+                                     'start times from')
+    limit_specs = []
+    if req.limits:
+        from night_planner.site_limits import load_site_limits, parse_limit_overrides
+        limit_specs = [f"{k}={'none' if v is None or v == '' else v}"
+                       for k, v in req.limits.items()]
+        try:
+            load_site_limits('lick', parse_limit_overrides(limit_specs))
+        except (KeyError, ValueError) as err:
+            raise HTTPException(400, f'pointing limits: {err}')
     if req.etc is not None:
         from night_planner.etc import load_etc
         try:
@@ -458,10 +517,14 @@ def generate(req: GenerateRequest):
     if req.no_partials:
         argv.append('--no-partials')
     for name in (*config_keys, 'seeing', 'mag_band', 'airmass_rule', 'etc',
-                 'target_sn'):
+                 'target_sn', 'placement'):
         value = getattr(req, name)
         if value is not None and value != '':
             argv += [f"--{name.replace('_', '-')}", str(value)]
+    if previous_plan is not None:
+        argv += ['--previous-plan', str(previous_plan)]
+    for spec in limit_specs:
+        argv += ['--limit', spec]
 
     if req.scenarios:
         names = [str(s.get('name') or '').strip() for s in req.scenarios]
@@ -660,9 +723,16 @@ def regenerate(req: RegenerateRequest):
         argv = _drop_flag(argv, '--set-time') + _flag_pairs(req.times, '--set-time')
     if req.sns is not None:
         argv = _drop_flag(argv, '--set-sn') + _flag_pairs(req.sns, '--set-sn', 'sn')
+    # Re-solving a plan keeps its own start times unless moving a target
+    # clearly lowers its airmass (2026-11-15): forcing one target in should
+    # not reshuffle everything else. Pipelines without the flag are left be.
+    instrument = request.get('instrument', plan.instrument)
+    if 'placement' in INSTRUMENTS.get(instrument, {}).get('supports', set()):
+        argv = _drop_flag(argv, '--previous-plan') + [
+            '--previous-plan', str(_safe_dir(req.output_dir))]
 
     try:
-        return _plan_payload(generate_plan(request.get('instrument', plan.instrument), argv))
+        return _plan_payload(generate_plan(instrument, argv))
     except SystemExit as err:
         raise HTTPException(400, f'planner exited: {err}')
 

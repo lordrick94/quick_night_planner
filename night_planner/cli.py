@@ -45,7 +45,8 @@ INSTRUMENTS = {
         'build': None,  # no Excel builder for the general Lick path yet
         'supports': {'targets_csv', 'output_dir', 'date', 'start', 'blocks',
                      'forced', 'max_targets', 'no_partials', 'config',
-                     'seeing', 'mag_band', 'airmass_rule', 'etc', 'target_sn'},
+                     'seeing', 'mag_band', 'airmass_rule', 'etc', 'target_sn',
+                     'placement', 'previous_plan', 'limits'},
     },
 }
 
